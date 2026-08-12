@@ -2,6 +2,7 @@ import {
   App,
   Modal,
   Notice,
+  Platform,
   PluginSettingTab,
   Setting,
   requestUrl,
@@ -12,7 +13,6 @@ import {
   DEFAULT_SETTINGS,
   FRONT_MATTER_VARIABLES,
   ImageMode,
-  ImageUploadRelay,
   MIN_AUTO_SYNC_FREQUENCY,
   MergeMode,
   MessageSortOrder,
@@ -21,20 +21,14 @@ import {
   DiaryLinkOrder,
   PluginLanguage,
 } from './settings'
-import {
-  RELAY_TARGETS,
-  PASTE_IMAGE_RENAME_TARGET,
-  checkRelayReady,
-  describeRelayReason,
-  getRelayTarget,
-} from './imageUploadRelay'
 import { formatDate } from './util'
 import { validateTemplate, validateDateFormat } from './settings/validation'
-import { analyzeTemplaterTags, isTemplaterAvailable } from './sync/templaterRelay'
+import { analyzeTemplaterTags } from './sync/templaterRelay'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
 import { validateFrontMatterTemplate } from './settings/template'
 import { validateMergeFileTemplate } from './sync/mergeFileTemplate'
-import { getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh, getQrCodeUrl, getQrCodeFallbackUrl } from './api'
+import { getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh } from './api'
+import { VIP_QR_DATA_URI } from './assets/vipQrImage'
 import { log, logError, Logger } from './logger'
 import { MARKET_VERSION_CHECK_URL } from './updateReminder'
 import { t } from './i18n'
@@ -79,15 +73,10 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     this.plugin = plugin
   }
 
-  // 加载二维码图片 - 主域名失败时自动切换备用域名
-  private loadQrCode(type: 'vip' | 'group', imgElement: HTMLImageElement): void {
-    imgElement.onerror = () => {
-      imgElement.onerror = null
-      log('🔧 主域名图片加载失败，切换备用域名:', type)
-      imgElement.src = getQrCodeFallbackUrl(type)
-    }
-    imgElement.src = getQrCodeUrl(type)
-    log('🔧 设置二维码图片:', type, imgElement.src)
+  // 市场版：二维码不走网络 —— 「购买高级权益」用打包进插件的静态 data URI
+  // （见 src/assets/vipQrImage.ts；政策禁止网络动态加载推广内容，静态+披露允许）。
+  private loadQrCode(imgElement: HTMLImageElement): void {
+    imgElement.src = VIP_QR_DATA_URI
   }
 
   // 更新VIP状态显示（自动/页面加载/原有「刷新」按钮：走 /user-config，CF 端 15s 缓存）
@@ -204,18 +193,20 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     }
 
     if (qrImg && qrLabel) {
-      // 根据会员状态决定显示哪个二维码
-      const qrType =
+      const isMember =
         vipStatus.isValid &&
         (vipStatus.vipType === 'obvip' || vipStatus.vipType === 'obvvip')
-          ? 'group'
-          : 'vip'
 
-      // 更新二维码图片
-      this.loadQrCode(qrType, qrImg)
-
-      // 更新引导文字
-      qrLabel.textContent = qrType === 'group' ? '加入交流群' : '购买高级权益'
+      if (isMember) {
+        // 市场版：微信群二维码会过期轮换，既不打包也不联网加载 —— 文字引导替代
+        qrImg.addClass('is-hidden')
+        qrLabel.textContent = '如需加入用户交流群，请在「笔记同步助手」服务号内联系获取'
+      } else {
+        // 非会员：展示打包内置的静态「购买高级权益」二维码（零网络请求）
+        qrImg.removeClass('is-hidden')
+        this.loadQrCode(qrImg)
+        qrLabel.textContent = '购买高级权益'
+      }
     }
   }
 
@@ -284,13 +275,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     if (!a.hasTags) return ''
     const msgs: string[] = []
     if (a.poisoned) msgs.push(t('settings.templater.warnUnclosed'))
-    if (a.execCount > 0) msgs.push(t('settings.templater.warnExecBlock'))
-    if (a.unsupportedCalls.length > 0) {
-      msgs.push(t('settings.templater.warnUnsupported') + a.unsupportedCalls.join(', '))
-    }
-    if (a.relayableCount > 0 && !isTemplaterAvailable(this.app)) {
-      msgs.push(t('settings.templater.warnNotInstalled'))
-    }
+    // 市场版不做 Templater 插值接力：任何 <% %> 标签都原样保留在笔记里
+    msgs.push(t('settings.templater.marketPassthrough'))
     return msgs.join('\n')
   }
 
@@ -1720,12 +1706,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             }),
         )
 
-      // 图床接力（可选）
-      // 仅在桌面端显示：三个候选插件都是 isDesktopOnly:true
-      const isMobile = Boolean((this.plugin.app as unknown as { isMobile?: boolean }).isMobile)
-      if (!isMobile) {
-        this.renderImageUploadRelaySection(imageBody)
-      }
+      // 市场版：图床接力（跨插件特性）已整体移除
     }
 
     // ============ 4. 日记链接 ============
@@ -2063,117 +2044,6 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     } else {
       block.addClass('is-hidden')
     }
-  }
-
-  /**
-   * 渲染「图床接力」——作为图片处理下的一个子设置项，风格与"图片处理模式"保持一致：
-   * 单个 Setting 行（setName / setDesc / addDropdown），不再用 h5 标题+独立块。
-   *
-   * 状态角标（✅ / ⚠️）挂在 desc 内部，随下拉切换实时刷新。
-   * 仅在 imageMode=LOCAL 且桌面端时调用。
-   */
-  private renderImageUploadRelaySection(containerEl: HTMLElement): void {
-    const statusEl = createEl('div', {
-      attr: { style: 'margin-top: 6px;' },
-    })
-
-    const refreshStatus = (mode: ImageUploadRelay) => {
-      statusEl.empty()
-      const target = getRelayTarget(mode)
-      if (!target) {
-        statusEl.setText(t('relay.statusOff'))
-        return
-      }
-      const result = checkRelayReady(this.plugin.app, target)
-      if (result.ok) {
-        statusEl.setText(`✅ ${t('relay.statusReady')}：${target.displayName}`)
-        return
-      }
-      const reason = describeRelayReason(target, result.reason!)
-      statusEl.setText(`⚠️ ${reason}`)
-      if (result.reason === 'plugin_disabled') {
-        statusEl.createEl('br')
-        statusEl.createEl('small', { text: `${t('relay.statusInstall')}: ${target.homepage}` })
-      }
-    }
-
-    new Setting(containerEl)
-      .setName(t('relay.name'))
-      .setDesc(
-        createFragment((fragment) => {
-          fragment.append(
-            t('relay.descMain'),
-            fragment.createEl('br'),
-            fragment.createEl('small', {
-              text: `${t('relay.targetsLabel')}: ${Object.values(RELAY_TARGETS)
-                .map((target) => target.displayName)
-                .join(' · ')}`,
-            }),
-          )
-          fragment.appendChild(statusEl)
-        }),
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption(ImageUploadRelay.NONE, t('relay.optionDisabled'))
-          .addOption(ImageUploadRelay.IAUP, 'Image auto upload (PicGo/PicList)')
-          .addOption(ImageUploadRelay.IUTK, 'Image Upload Toolkit')
-          .addOption(ImageUploadRelay.CIUP, 'Obsidian Image Uploader (Creling)')
-          .setValue(this.plugin.settings.imageUploadRelay)
-          .onChange(async (value) => {
-            this.plugin.settings.imageUploadRelay = value as ImageUploadRelay
-            await this.plugin.saveSettings(true)
-            refreshStatus(this.plugin.settings.imageUploadRelay)
-          }),
-      )
-
-    refreshStatus(this.plugin.settings.imageUploadRelay)
-
-    // 改名接力（可选，在上传接力之前跑）：Paste image rename 把哈希图片改成笔记标题名。
-    // 独立开关，可与上面的上传接力任意组合（或 relay=关闭 时只改名不上传）。
-    const renameStatusEl = createEl('div', { attr: { style: 'margin-top: 6px;' } })
-    const refreshRenameStatus = (enabled: boolean) => {
-      renameStatusEl.empty()
-      if (!enabled) {
-        renameStatusEl.setText(t('relay.renameStatusOff'))
-        return
-      }
-      const result = checkRelayReady(this.plugin.app, PASTE_IMAGE_RENAME_TARGET)
-      if (result.ok) {
-        renameStatusEl.setText(
-          `✅ ${t('relay.statusReady')}：${PASTE_IMAGE_RENAME_TARGET.displayName}`,
-        )
-        return
-      }
-      const reason = describeRelayReason(PASTE_IMAGE_RENAME_TARGET, result.reason!)
-      renameStatusEl.setText(`⚠️ ${reason}`)
-      if (result.reason === 'plugin_disabled') {
-        renameStatusEl.createEl('br')
-        renameStatusEl.createEl('small', {
-          text: `${t('relay.statusInstall')}: ${PASTE_IMAGE_RENAME_TARGET.homepage}`,
-        })
-      }
-    }
-
-    new Setting(containerEl)
-      .setName(t('relay.renameName'))
-      .setDesc(
-        createFragment((fragment) => {
-          fragment.append(t('relay.renameDesc'))
-          fragment.appendChild(renameStatusEl)
-        }),
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.imageRenameBeforeRelay)
-          .onChange(async (value) => {
-            this.plugin.settings.imageRenameBeforeRelay = value
-            await this.plugin.saveSettings(true)
-            refreshRenameStatus(value)
-          }),
-      )
-
-    refreshRenameStatus(this.plugin.settings.imageRenameBeforeRelay)
   }
 
   private displayVersionInfo(containerEl: HTMLElement) {

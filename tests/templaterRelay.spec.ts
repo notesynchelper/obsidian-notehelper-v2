@@ -14,8 +14,6 @@ import { App, TFile } from 'obsidian'
 import {
   analyzeTemplaterTags,
   maskTemplaterTags,
-  isTemplaterAvailable,
-  TemplaterRelaySession,
   suppressTemplaterTriggerOnCreate,
   TEMPLATER_PLUGIN_ID,
 } from '../src/sync/templaterRelay'
@@ -193,166 +191,26 @@ describe('maskTemplaterTags', () => {
 })
 
 // ---------------------------------------------------------------------------
-// TemplaterRelaySession（fake app + fake templater）
-// ---------------------------------------------------------------------------
-
-type FakeParse = jest.Mock<Promise<string>, [unknown, string]>
-
-const makeContextFile = (): TFile => {
-  const f = new TFile()
-  f.path = 'ctx.md'
-  f.basename = 'ctx'
-  f.extension = 'md'
-  return f
-}
-
-const makeApp = (opts: {
-  templater?: {
-    create_running_config?: unknown
-    parse_template?: unknown
-    files_with_pending_templates?: Set<string>
-  } | null
-  activeFile?: TFile | null
-  markdownFiles?: TFile[]
-}): App => {
-  const plugins: Record<string, unknown> = {}
-  if (opts.templater !== null && opts.templater !== undefined) {
-    plugins[TEMPLATER_PLUGIN_ID] = { templater: opts.templater }
-  }
-  return {
-    workspace: { getActiveFile: () => opts.activeFile ?? null },
-    vault: { getMarkdownFiles: () => opts.markdownFiles ?? [makeContextFile()] },
-    plugins: { plugins },
-  } as unknown as App
-}
-
-/** 极简 fake Templater：把 <% YEAR %> 渲染成 2026，其余标签原样返回 */
-const makeFakeTemplater = () => {
-  const parse_template: FakeParse = jest.fn(
-    (_cfg: unknown, text: string): Promise<string> =>
-      Promise.resolve(text.replace(/<%[-_]?\s*YEAR\s*[-_]?%>/g, '2026')),
-  )
-  const create_running_config = jest.fn(() => ({ run_mode: 4 }))
-  return { parse_template, create_running_config, files_with_pending_templates: new Set<string>() }
-}
-
-describe('TemplaterRelaySession', () => {
-  it('插值被接力渲染；<%* 执行块不送 Templater 且原样保留', async () => {
-    const tpl = makeFakeTemplater()
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    const out = await session.relayTemplate('<% YEAR %> 头\n<%* await tp.file.rename("x") %>\n尾')
-    expect(out).toContain('2026 头')
-    expect(out).toContain('<%* await tp.file.rename("x") %>')
-    // 送进 parse_template 的文本绝不含执行块
-    const sent = tpl.parse_template.mock.calls[0][1]
-    expect(sent).not.toContain('<%*')
-    expect(sent).toContain('<% YEAR %>')
-  })
-
-  it('tp.file.* 标签不送 Templater 且原样保留', async () => {
-    const tpl = makeFakeTemplater()
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    const out = await session.relayTemplate('<% YEAR %> | <% tp.file.title %>')
-    expect(out).toContain('2026')
-    expect(out).toContain('<% tp.file.title %>')
-    expect(tpl.parse_template.mock.calls[0][1]).not.toContain('tp.file.title')
-  })
-
-  it('未装 Templater → 原文返回', async () => {
-    const app = makeApp({ templater: null })
-    const session = new TemplaterRelaySession(app)
-    const src = '<% tp.date.now() %>'
-    expect(await session.relayTemplate(src)).toBe(src)
-  })
-
-  it('毒化模板（未闭合 <%）→ 原文返回且不调 Templater', async () => {
-    const tpl = makeFakeTemplater()
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    const src = '<% YEAR %> 残留 <% 没闭合'
-    expect(await session.relayTemplate(src)).toBe(src)
-    expect(tpl.parse_template).not.toHaveBeenCalled()
-  })
-
-  it('parse_template 抛错 → 原文返回', async () => {
-    const tpl = makeFakeTemplater()
-    tpl.parse_template.mockRejectedValueOnce(new Error('boom'))
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    const src = '<% YEAR %>'
-    expect(await session.relayTemplate(src)).toBe(src)
-  })
-
-  it('parse_template 返回非字符串 → 原文返回', async () => {
-    const tpl = makeFakeTemplater()
-    ;(tpl.parse_template as jest.Mock).mockResolvedValueOnce(undefined)
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    const src = '<% YEAR %>'
-    expect(await session.relayTemplate(src)).toBe(src)
-  })
-
-  it('超时 → 原文返回（tp.web.* 悬挂场景）', async () => {
-    const tpl = makeFakeTemplater()
-    ;(tpl.parse_template as jest.Mock).mockImplementationOnce(
-      () => new Promise<string>(() => { /* 永不 resolve */ }),
-    )
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app, 50)
-    const src = '<% YEAR %>'
-    expect(await session.relayTemplate(src)).toBe(src)
-  })
-
-  it('同一模板第二次调用命中缓存（每轮只渲染一次）', async () => {
-    const tpl = makeFakeTemplater()
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    const src = '<% YEAR %>'
-    await session.relayTemplate(src)
-    await session.relayTemplate(src)
-    expect(tpl.parse_template).toHaveBeenCalledTimes(1)
-  })
-
-  it('库内无任何 markdown 文件 → 原文返回且不调 Templater', async () => {
-    const tpl = makeFakeTemplater()
-    const app = makeApp({ templater: tpl, activeFile: null, markdownFiles: [] })
-    const session = new TemplaterRelaySession(app)
-    const src = '<% YEAR %>'
-    expect(await session.relayTemplate(src)).toBe(src)
-    expect(tpl.parse_template).not.toHaveBeenCalled()
-  })
-
-  it('无标签模板不调 Templater（快路径）', async () => {
-    const tpl = makeFakeTemplater()
-    const app = makeApp({ templater: tpl })
-    const session = new TemplaterRelaySession(app)
-    expect(await session.relayTemplate('{{{content}}}')).toBe('{{{content}}}')
-    expect(tpl.parse_template).not.toHaveBeenCalled()
-  })
-
-  it('create_running_config 以 DynamicProcessor 模式 + 真实上下文文件调用', async () => {
-    const tpl = makeFakeTemplater()
-    const ctx = makeContextFile()
-    const app = makeApp({ templater: tpl, activeFile: ctx })
-    const session = new TemplaterRelaySession(app)
-    await session.relayTemplate('<% YEAR %>')
-    expect(tpl.create_running_config).toHaveBeenCalledWith(undefined, ctx, 4)
-  })
-})
-
-describe('isTemplaterAvailable', () => {
-  it('齐备时 true，缺插件/缺方法时 false', () => {
-    expect(isTemplaterAvailable(makeApp({ templater: makeFakeTemplater() }))).toBe(true)
-    expect(isTemplaterAvailable(makeApp({ templater: null }))).toBe(false)
-    expect(isTemplaterAvailable(makeApp({ templater: { parse_template: () => '' } }))).toBe(false)
-  })
-})
-
-// ---------------------------------------------------------------------------
 // suppressTemplaterTriggerOnCreate（P0 注入面加固）
 // ---------------------------------------------------------------------------
+
+// fake Templater 实例：只需要 P0 抑制条目集合（市场版已移除插值接力）
+function makeFakeTemplater() {
+  return {
+    files_with_pending_templates: new Set<string>(),
+  }
+}
+
+// fake App：塞一个 app.plugins.plugins['templater-obsidian'].templater
+function makeApp({ templater }: { templater: unknown }) {
+  return {
+    plugins: {
+      plugins: {
+        'templater-obsidian': templater === null ? undefined : { templater },
+      },
+    },
+  } as never
+}
 
 describe('suppressTemplaterTriggerOnCreate', () => {
   it('创建前预挂抑制条目；release 后约 900ms 删除（覆盖 Templater 的 300ms 触发窗）', () => {

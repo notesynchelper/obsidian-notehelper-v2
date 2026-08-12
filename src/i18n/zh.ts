@@ -25,20 +25,6 @@ const zh: Dict = {
     reminderLine: '发现新版本 {version}，点击前往第三方插件页升级',
     configRestored: '配置已从备份恢复',
   },
-  relay: {
-    name: '图床接力',
-    descMain:
-      '可选。本地化完成后，把 ![[...]] 图片批量接力给已安装的图床上传插件，最终写成 ![](https://...)。',
-    targetsLabel: '已知目标',
-    statusOff: '当前：已关闭（保留本地图片）',
-    statusReady: '已就绪',
-    statusInstall: '安装',
-    optionDisabled: '关闭',
-    renameName: '接力前先改名（Paste image rename）',
-    renameDesc:
-      '可选。本地化落下的图片是随机哈希名，开启后先用「Paste image rename」插件把它们改成笔记标题名，再跑上面的图床接力（若已选）。图片仍是本地链接，只是文件名更整齐。⚠️ 该插件会改名同步笔记里的所有图片；若你在同步笔记中手动插入过自己的本地图片，也会一并被改名。',
-    renameStatusOff: '当前：已关闭',
-  },
   settings: {
     // Phase-2 IA：设置页分区（一级折叠 + VIP中心内二级折叠）的标题与摘要
     section: {
@@ -65,11 +51,11 @@ const zh: Dict = {
         message: '消息处理',
         template: '模板设置',
       },
-      imageSub: '图片下载、转换与图床接力',
+      imageSub: '图片下载与转换',
       diarySub: '同步完成后在日记中插入内容链接',
       system: {
         name: '系统设置',
-        sub: '界面语言与自动更新',
+        sub: '界面语言与更新检查',
       },
       clearCloud: {
         name: '清空云空间',
@@ -267,12 +253,9 @@ const zh: Dict = {
     // 文章模板 / 消息模板里 Templater 用法的实时提示（只提示、不阻断保存）
     templater: {
       warnUnclosed:
-        '⚠️ 检测到未闭合的 <% 标签：Templater 会静默放弃整个模板的渲染。请补全 %> 或删掉多余的 <%。',
-      warnExecBlock:
-        '⚠️ 不支持 <%* 执行块：这些段落会原样保留在笔记里，不会被执行。',
-      warnUnsupported: '⚠️ 不支持的 Templater 调用（会原样保留在笔记里）：',
-      warnNotInstalled:
-        'ℹ️ 检测到 Templater 变量：安装并启用 Templater 插件后，每轮同步开始时会渲染一次 <% %> 插值。',
+        '⚠️ 检测到未闭合的 <% 标签：请补全 %> 或删掉多余的 <%，否则模板可能渲染异常。',
+      marketPassthrough:
+        'ℹ️ 本版本不执行 Templater <% %> 插值，相关标签会原样保留在笔记中。',
     },
     advanced: {
       heading: '高级选项',

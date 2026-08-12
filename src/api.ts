@@ -991,16 +991,5 @@ export const fetchVipStatusFresh = async (
   }
 }
 
-// 获取二维码图片 URL - 直接返回 Cloudflare CDN 地址
-export const getQrCodeUrl = (type: 'vip' | 'group'): string => {
-  return type === 'vip'
-    ? 'https://obsidian.notebooksyncer.com/vip.png'
-    : 'https://obsidian.notebooksyncer.com/obgroup.png'
-}
-
-// 获取二维码图片备用 URL
-export const getQrCodeFallbackUrl = (type: 'vip' | 'group'): string => {
-  return type === 'vip'
-    ? 'http://qiniupic.bijitongbu.site/vip.png'
-    : 'http://qiniupic.bijitongbu.site/obgroup.png'
-}
+// 市场版：二维码不再从网络加载 ——「购买高级权益」二维码以静态资产打包在
+// src/assets/vipQrImage.ts（政策禁止动态加载推广内容）；群二维码降级为文字引导。

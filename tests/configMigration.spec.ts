@@ -12,7 +12,6 @@ import {
   OmnivoreSettings,
   MergeMode,
   ImageMode,
-  ImageUploadRelay,
   DiaryLinkType,
   HighlightManagerId,
 } from '../src/settings/index'
@@ -81,7 +80,6 @@ function createUserSettings(overrides?: Partial<OmnivoreSettings>): OmnivoreSett
     jpegQuality: 90,
     imageDownloadRetries: 5,
     imageAttachmentFolder: '自定义图片',
-    imageUploadRelay: ImageUploadRelay.IAUP,
     enableDiaryLinks: true,
     diaryFolder: '我的日记',
     diaryDateFormat: 'yyyy/MM/dd',
@@ -208,14 +206,6 @@ describe('BUG 2: smartMergeSettings 应保留所有用户配置字段', () => {
     expect(merged.jpegQuality).toBe(90)
     expect(merged.imageDownloadRetries).toBe(5)
     expect(merged.imageAttachmentFolder).toBe('自定义图片')
-  })
-
-  it('迁移后保留图床接力选择（imageUploadRelay）', () => {
-    // 用户曾开启接力到 PicGo，升级 / backup restore 不应悄悄重置为 NONE
-    const current = { ...DEFAULT_SETTINGS }
-    const backup = createUserSettings()
-    const merged = manager.smartMergeSettings(current, backup, '3.0.0')
-    expect(merged.imageUploadRelay).toBe(ImageUploadRelay.IAUP)
   })
 
   it('迁移后保留所有日记链接设置', () => {

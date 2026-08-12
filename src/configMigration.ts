@@ -227,10 +227,6 @@ export class ConfigMigrationManager {
       'mergeFileTemplate',
       'imageMode', 'enablePngToJpeg', 'jpegQuality',
       'imageDownloadRetries', 'imageAttachmentFolder',
-      // 图床接力下拉：用户显式选择的目标，升级 / backup restore 时必须保留
-      'imageUploadRelay',
-      // 改名接力开关：用户显式开启（imageRenameBeforeRelay=true）是 opt-in，迁移必须保留
-      'imageRenameBeforeRelay',
       'enableDiaryLinks', 'diaryFolder', 'diaryDateFormat',
       'diaryAnchor', 'diaryLinkType',
       // 设备级自动同步（注意：deviceAutoSync 是 map，不能整个替换，下方有专门的合并逻辑）

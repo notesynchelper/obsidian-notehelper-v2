@@ -4,6 +4,7 @@ import {
   addIcon,
   normalizePath,
   Notice,
+  Platform,
   Plugin,
   requestUrl,
   TFile,
@@ -11,10 +12,9 @@ import {
 } from 'obsidian'
 import { getItems, deleteArticleById } from './api'
 import { log, logError, Logger } from './logger'
-import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, ImageUploadRelay, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage } from './settings'
+import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage } from './settings'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
 import { setForcedLang, t } from './i18n'
-import { RelayRunner, PASTE_IMAGE_RENAME_TARGET } from './imageUploadRelay'
 import {
   getDeviceAutoSync,
   setDeviceAutoSync,
@@ -29,6 +29,7 @@ import {
   OLD_DEFAULT_TEMPLATE,
 } from './settings/template'
 import { OmnivoreSettingTab } from './settingsTab'
+import { stripPromoQrImages } from './common/imageRelay'
 import {
   escapeContentHashtags,
   formatDate,
@@ -55,7 +56,6 @@ import { SyncNoticeManager } from './sync/SyncNoticeManager'
 import { MergeProcessor, MergeGroup, flushMergeGroups } from './sync/MergeProcessor'
 import { renderMergeFileTemplate } from './sync/mergeFileTemplate'
 import {
-  TemplaterRelaySession,
   suppressTemplaterTriggerOnCreate,
   maskTemplaterTags,
 } from './sync/templaterRelay'
@@ -147,7 +147,7 @@ export default class OmnivorePlugin extends Plugin {
     try {
       let id = window.localStorage.getItem(STORAGE_KEY)
       if (!id) {
-        const platform = (this.app as any).isMobile ? 'mobile' : 'desktop'
+        const platform = Platform.isMobile ? 'mobile' : 'desktop'
         id = `${platform}-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`
         window.localStorage.setItem(STORAGE_KEY, id)
         log(`🆔 生成新设备ID: ${id}`)
@@ -1208,12 +1208,12 @@ export default class OmnivorePlugin extends Plugin {
     try {
       await this.app.vault.createFolder(folderName)
     } catch (error: unknown) {
-      // 处理文件夹已存在的情况
+      // 处理文件夹已存在的情况（并发创建竞态）：视为成功即可，
+      // Vault API 会自行派发事件，无需（也不应）手动 trigger 内部事件。
       const errorMessage = error instanceof Error ? error.message : String(error)
       if (errorMessage.includes('Folder already exists') ||
           errorMessage.includes('already exists')) {
-        // 简化处理：触发vault刷新事件
-        this.app.vault.trigger('changed')
+        // no-op
       } else {
         logError(`🔧 文件夹创建失败: ${folderName}`, error)
         throw error
@@ -1435,14 +1435,10 @@ export default class OmnivorePlugin extends Plugin {
     try {
       log(`笔记同步助手开始同步，自: '${syncAt}'`)
 
-      // Templater 接力：文章模板 / 消息模板里的 <% %> 插值先经 Templater 渲染
-      // （每轮一次、结果缓存；未装 Templater / 失败 / 超时 → 原文返回，非破坏）。
-      // <%* 执行块与 tp.file.* 等不支持的调用会被掩码原样保留，绝不送进 Templater。
-      const templaterRelay = new TemplaterRelaySession(this.app)
-      const effectiveTemplate = await templaterRelay.relayTemplate(template)
-      const effectiveWechatMessageTemplate = await templaterRelay.relayTemplate(
-        this.settings.wechatMessageTemplate,
-      )
+      // 市场版：不做 Templater 插值接力（该能力依赖 Templater 未公开的内部 API）。
+      // 模板里的 <% %> 标签仍会被掩码保护（防 Mustache 解析炸裂），并原样保留在输出中。
+      const effectiveTemplate = template
+      const effectiveWechatMessageTemplate = this.settings.wechatMessageTemplate
 
       // pre-parse template
       log('🔧 开始解析前端模板')
@@ -1581,10 +1577,18 @@ export default class OmnivorePlugin extends Plugin {
             ((mergeMode === MergeMode.MESSAGES || dualWrite) && isWeChatMessage(item)) ||
             mergeMode === MergeMode.ALL
 
-          // 如果开启了标签转义，用浅拷贝处理 content
-          const itemForRender = this.settings.escapeHashtags && item.content
-            ? { ...item, content: escapeContentHashtags(item.content) }
-            : item
+          // 市场版合规：先剥离正文里的「积分充值二维码」推广图（插件界面外不得
+          // 出现推广，会员入口统一在设置页）；再按需做标签转义。都用浅拷贝。
+          let contentForRender = item.content
+          if (contentForRender) {
+            contentForRender = stripPromoQrImages(contentForRender)
+            if (this.settings.escapeHashtags) {
+              contentForRender = escapeContentHashtags(contentForRender)
+            }
+          }
+          const itemForRender = contentForRender === item.content
+            ? item
+            : { ...item, content: contentForRender }
 
           // 同一条 item 在双写模式下要渲染两次（合并副本 merged=true / 独立副本 merged=false），
           // 抽成局部闭包避免两处 14 个位置参数漂移。
@@ -1854,83 +1858,8 @@ export default class OmnivorePlugin extends Plugin {
         }
       }
 
-      // 本轮本地化处理过的笔记（改名接力 / 上传接力共用同一批）
-      const relayFiles = syncContext.getProcessedFilesArray()
-
-      // 改名接力阶段（可选，必须在上传接力之前跑）
-      // 先用 Paste image rename 把本次本地化的 md5 哈希图片改成笔记标题名；
-      // 链接仍是本地 wiki，之后若开了上传接力会接着把它们传成远端链接。
-      // 完成判据以「内容稳定收敛」为主（waitForRenameDone），成功即代表批量已停手，
-      // 故这里不再对上传阶段做「跳过未收敛文件」的延后——那会让一次性文章的图永久不上传
-      // （relayFiles 只含本轮 API 返回的文件，落后游标后不会再进接力阶段）。改名超时属罕见
-      // （需 6s+ 内容持续变动才判超时），且即便与上传轻微交错也可由下轮 replay + 映射自愈。
-      const isMobileEnv = !!(this.app as unknown as { isMobile?: boolean }).isMobile
-      const renameEligible =
-        this.settings.imageMode === ImageMode.LOCAL &&
-        this.settings.imageRenameBeforeRelay &&
-        !isMobileEnv
-      if (renameEligible) {
-        try {
-          const renameRunner = new RelayRunner(this.app, PASTE_IMAGE_RENAME_TARGET, {
-            imageAttachmentFolder: this.settings.imageAttachmentFolder,
-          })
-          await renameRunner.runOn(relayFiles, {
-            onPhaseStart: (total) => {
-              if (manualSync && total > 0) {
-                noticeManager.startPhaseProgress('图片改名', total)
-              }
-            },
-            onProgress: () => {
-              if (manualSync) noticeManager.onPhaseItemProcessed()
-            },
-            onPhaseDone: () => {
-              // 改名是装饰性的（失败也只是文件名还是哈希，图片仍是有效本地链接），
-              // 不用 failPhase 吓用户；细节在控制台日志。始终收掉进度条即可。
-              if (manualSync) noticeManager.completePhase()
-            },
-          })
-        } catch (error: unknown) {
-          // RelayRunner.runOn 已兜住单文件异常；走到这里是构造异常，罕见
-          logError('🚚 图片改名接力阶段失败:', error)
-          if (manualSync) noticeManager.completePhase()
-        }
-      }
-
-      // 图床接力阶段（仅 LOCAL 模式 + 用户显式开启 + 桌面端）
-      // 把本次本地化写入的 `![[.../images/*.jpg]]` 批量调度给第三方图床插件上传
-      const relayMode = this.settings.imageUploadRelay
-      const relayEligible =
-        this.settings.imageMode === ImageMode.LOCAL &&
-        relayMode !== ImageUploadRelay.NONE &&
-        !isMobileEnv
-      if (relayEligible) {
-        try {
-          const runner = new RelayRunner(this.app, relayMode, {
-            // 限定接力识别范围：只认 imageAttachmentFolder 前缀下的 wiki 链接，
-            // 避免误把用户手写的 ![[assets/xxx.png]] 当成接力目标
-            imageAttachmentFolder: this.settings.imageAttachmentFolder,
-          })
-          await runner.runOn(relayFiles, {
-            onPhaseStart: (total) => {
-              if (manualSync && total > 0) {
-                noticeManager.startPhaseProgress('接力图床', total)
-              }
-            },
-            onProgress: () => {
-              if (manualSync) noticeManager.onPhaseItemProcessed()
-            },
-            onPhaseDone: (ok) => {
-              if (!manualSync) return
-              if (ok) noticeManager.completePhase()
-              else noticeManager.failPhase('图床接力部分失败，见控制台')
-            },
-          })
-        } catch (error: unknown) {
-          // RelayRunner.runOn 已兜住单文件异常；走到这里是 runner 构造异常，罕见
-          logError('🚚 图床接力阶段失败:', error)
-          if (manualSync) noticeManager.failPhase('图床接力初始化失败，见控制台')
-        }
-      }
+      // 市场版：图床上传接力 / 图片改名接力（调用其它插件命令的跨插件特性）
+      // 已整体移除 —— 该能力依赖未公开的 app.plugins / app.commands API。
 
       // 处理日记链接（同步完成后）
       if (this.settings.enableDiaryLinks && syncContext.diaryLinkProcessor.linkCount > 0) {
@@ -2088,30 +2017,15 @@ export default class OmnivorePlugin extends Plugin {
 
 
   /**
-   * 简化的文件浏览器刷新方法
-   * 使用标准的Obsidian事件机制
+   * 文件浏览器刷新（市场版：no-op）。
+   *
+   * 历史实现手动 trigger `vault.trigger('changed')` / `workspace.trigger('layout-change')`
+   * 内部事件强刷 explorer —— 属未公开 API 且早已多余：本插件全部落盘都走
+   * Vault API（create/modify/process），Obsidian 会自行派发事件并刷新文件浏览器。
+   * 保留方法与调用点以最小化与主项目的 diff。
    */
   private refreshFileExplorer() {
-    // 防抖：如果已经有刷新任务在队列中，取消之前的
-    if (this.refreshTimeout) {
-      clearTimeout(this.refreshTimeout)
-    }
-
-    this.refreshTimeout = setTimeout(() => {
-      try {
-        log('🔄 开始刷新文件浏览器')
-
-        // 使用标准的vault事件触发刷新
-        this.app.vault.trigger('changed')
-        this.app.workspace.trigger('layout-change')
-
-        log('🔄 文件浏览器刷新完成')
-      } catch (error) {
-        log('🔄 文件浏览器刷新遇到问题:', error)
-      } finally {
-        this.refreshTimeout = null
-      }
-    }, 100)
+    // 依赖 Vault API 的原生事件派发，无需手动刷新
   }
 
   /**
@@ -2120,7 +2034,7 @@ export default class OmnivorePlugin extends Plugin {
    * 其余在新标签打开。单篇打开失败只 log，不中断其它篇。
    */
   private async openFirstSyncNotes(files: TFile[]): Promise<void> {
-    const isMobile = !!(this.app as unknown as { isMobile?: boolean }).isMobile
+    const isMobile = Platform.isMobile
     const toOpen = selectNotesToOpen(files, isMobile)
     for (let i = 0; i < toOpen.length; i++) {
       try {
@@ -2140,7 +2054,7 @@ export default class OmnivorePlugin extends Plugin {
    * 避免反复调试把同一批旧标签重复打开（codex #8）。剔除后取前 N 篇打开；若全都已打开则不动。
    */
   private async openDebugNotes(files: TFile[]): Promise<void> {
-    const isMobile = !!(this.app as unknown as { isMobile?: boolean }).isMobile
+    const isMobile = Platform.isMobile
     // 收集已打开的 markdown 文件路径（best-effort：任何异常都退化为空集 → 顶多重复打开，绝不崩）。
     let openPaths = new Set<string>()
     try {

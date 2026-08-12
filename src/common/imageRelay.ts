@@ -88,6 +88,32 @@ export function isNeverLocalizeUrl(url: string): boolean {
 }
 
 /**
+ * 市场版合规：把服务端拼进正文的「积分充值二维码」推广图从内容里剥掉。
+ *
+ * Obsidian Developer policies 禁止在插件自身界面之外（= 用户笔记里）出现推广，
+ * 市场版因此在渲染/写入 vault 前删除这些 <img> / markdown 图片引用。
+ * 只删图、不注入任何替代文字（往笔记里塞引导话术同样属于界面外推广）；
+ * 会员/充值入口统一放在插件设置页。周围的服务端说明文字原样保留。
+ */
+export function stripPromoQrImages(content: string): string {
+  if (!content || !content.includes('bijitongbu.site/qr/')) return content
+
+  // HTML 形式：<img ... src="https://www.bijitongbu.site/qr/..." ...>
+  let out = content.replace(/<img\b[^>]*>/gi, (tag) => {
+    const m = tag.match(/\bsrc\s*=\s*["']?([^"'\s>]+)/i)
+    return m && isNeverLocalizeUrl(m[1]) ? '' : tag
+  })
+
+  // Markdown 形式：![alt](https://www.bijitongbu.site/qr/... "title")
+  out = out.replace(
+    /!\[[^\]]*\]\(\s*<?([^()\s>]+)>?(?:\s+["'][^)]*["'])?\s*\)/g,
+    (whole, url: string) => (isNeverLocalizeUrl(url) ? '' : whole),
+  )
+
+  return out
+}
+
+/**
  * relay 路径前缀白名单：仅当 relay URL 命中这些前缀时才强制本地化。
  * - 'p'   对齐 pic.clipfx.app 的"纯图片通道"语义，覆盖无后缀 `[caption](relay-N/p/<hash>)` 场景
  * - 'm30' 对齐 media30d 源站的历史强制行为

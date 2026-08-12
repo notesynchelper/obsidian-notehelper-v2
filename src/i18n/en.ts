@@ -31,20 +31,6 @@ const en = {
     reminderLine: 'New version {version} available — click to update in Community plugins',
     configRestored: 'Configuration restored from backup',
   },
-  relay: {
-    name: 'Image upload relay',
-    descMain:
-      'Optional. After local download, batch-relay ![[...]] images to an installed image-uploader plugin so notes end up with remote ![](https://...) URLs.',
-    targetsLabel: 'Known targets',
-    statusOff: 'Off (keep local images)',
-    statusReady: 'Ready',
-    statusInstall: 'Install',
-    optionDisabled: 'Disabled',
-    renameName: 'Rename before relay (Paste image rename)',
-    renameDesc:
-      'Optional. Localized images get random hash names; enable this to first rename them to the note title via the "Paste image rename" plugin, then run the upload relay above (if selected). Images stay local links — only the filenames get tidier. ⚠️ The plugin renames every image in synced notes; any local image you manually inserted into those notes will be renamed too.',
-    renameStatusOff: 'Off',
-  },
   settings: {
     // Phase-2 IA：设置页分区（一级折叠 + VIP中心内二级折叠）的标题与摘要
     section: {
@@ -71,11 +57,11 @@ const en = {
         message: 'Messages',
         template: 'Templates',
       },
-      imageSub: 'Image download, conversion and upload relay',
+      imageSub: 'Image download and conversion',
       diarySub: 'Insert links to synced content into your diary notes',
       system: {
         name: 'System',
-        sub: 'Interface language and auto-update',
+        sub: 'Interface language and update check',
       },
       clearCloud: {
         name: 'Clear cloud space',
@@ -277,12 +263,9 @@ const en = {
     // Live hints for Templater usage inside article / message templates
     templater: {
       warnUnclosed:
-        '⚠️ Unclosed <% tag detected: Templater silently skips rendering the whole template. Close it with %> or remove the stray <%.',
-      warnExecBlock:
-        '⚠️ <%* execution blocks are not supported: they are kept as-is in notes and never executed.',
-      warnUnsupported: '⚠️ Unsupported Templater calls (kept as-is in notes): ',
-      warnNotInstalled:
-        'ℹ️ Templater variables detected: install and enable the Templater plugin to render <% %> once at the start of each sync.',
+        '⚠️ Unclosed <% tag detected: close it with %> or remove the stray <%, otherwise the template may render incorrectly.',
+      marketPassthrough:
+        'ℹ️ This edition does not run Templater <% %> interpolation; such tags are kept as-is in your notes.',
     },
     advanced: {
       heading: 'Advanced',

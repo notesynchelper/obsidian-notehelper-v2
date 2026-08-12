@@ -24,10 +24,8 @@ import { log, logError } from '../logger'
 export const TEMPLATER_PLUGIN_ID = 'templater-obsidian'
 
 /** Templater RunMode.DynamicProcessor —— 真机实验 P8 验证过的 parse_template 模式 */
-const RUN_MODE_DYNAMIC_PROCESSOR = 4
 
 /** 单次 parse_template 超时（tp.web.* 网络请求可能悬挂；内存渲染超时无副作用） */
-const RELAY_TIMEOUT_MS = 20_000
 
 /**
  * 触发抑制的保留时长：Templater trigger_on_file_creation 在 create 事件后
@@ -248,12 +246,6 @@ export const maskTemplaterTags = (
 // ---------------------------------------------------------------------------
 
 interface TemplaterLike {
-  create_running_config?: (
-    templateFile: TFile | undefined,
-    targetFile: TFile,
-    runMode: number,
-  ) => unknown
-  parse_template?: (config: unknown, templateText: string) => Promise<string>
   files_with_pending_templates?: Set<string>
 }
 
@@ -265,138 +257,6 @@ const getTemplater = (app: App): TemplaterLike | null => {
     return anyApp.plugins?.plugins?.[TEMPLATER_PLUGIN_ID]?.templater ?? null
   } catch {
     return null
-  }
-}
-
-/** Templater 已启用且接力所需 API 齐备 */
-export const isTemplaterAvailable = (app: App): boolean => {
-  const templater = getTemplater(app)
-  return (
-    !!templater &&
-    typeof templater.create_running_config === 'function' &&
-    typeof templater.parse_template === 'function'
-  )
-}
-
-// ---------------------------------------------------------------------------
-// 接力会话（每轮同步一个实例）
-// ---------------------------------------------------------------------------
-
-/**
- * 每轮同步开始时对文章模板 / 消息模板各接力一次（结果按模板文本缓存）。
- * tp.date.now 等取「本轮同步时刻」；per-item 的日期继续由 Mustache 的
- * {{{dateSaved}}} 族承担 —— 两者语义不同，模板文档已注明。
- */
-export class TemplaterRelaySession {
-  private cache = new Map<string, string>()
-
-  constructor(
-    private app: App,
-    private timeoutMs: number = RELAY_TIMEOUT_MS,
-  ) {}
-
-  /**
-   * 对模板文本做 Templater 插值接力。任何情况下都不抛错：
-   * 没标签 / 没装 Templater / 毒化 / 超时 / 渲染异常 → 原文返回。
-   */
-  async relayTemplate(templateText: string | undefined): Promise<string> {
-    const text = templateText ?? ''
-    if (!text.includes('<%')) return text
-
-    const cached = this.cache.get(text)
-    if (cached !== undefined) return cached
-
-    const analysis = analyzeTemplaterTags(text)
-    if (analysis.poisoned) {
-      logError(
-        '⚠️ Templater 接力跳过：模板含未闭合的 <% 或 <%%（会静默毒化整段解析），标签原样保留',
-      )
-      return text
-    }
-    if (analysis.relayableCount === 0) return text
-
-    const templater = getTemplater(this.app)
-    if (
-      !templater ||
-      typeof templater.create_running_config !== 'function' ||
-      typeof templater.parse_template !== 'function'
-    ) {
-      log('Templater 未启用，模板中的 <% %> 标签原样保留')
-      return text
-    }
-
-    const contextFile = this.pickContextFile()
-    if (!contextFile) {
-      // parse_template 的 generate_object 会急切 read target_file，库里连一个
-      // markdown 文件都没有时无从满足 —— 极端情形，原样降级
-      log('Templater 接力跳过：库内没有可用的上下文文件')
-      return text
-    }
-
-    // 非插值标签（执行块 / 动态命令 / 不支持的调用）先掩码，不送进 Templater
-    const masked = maskTemplaterTags(text, (tag) => tag.kind !== 'interpolation')
-
-    try {
-      const config = templater.create_running_config(
-        undefined,
-        contextFile,
-        RUN_MODE_DYNAMIC_PROCESSOR,
-      )
-      const rendered = await this.withTimeout(
-        templater.parse_template(config, masked.text),
-      )
-      if (typeof rendered !== 'string') {
-        logError('⚠️ Templater parse_template 返回非字符串，模板原样保留')
-        return text
-      }
-      const restored = masked.restore(rendered)
-      this.cache.set(text, restored)
-      // Templater 内部吞错不上抛（真机 P4）：渲染失败的标签会原样留在输出里，
-      // 不重试（重试只会空转），交由设置页提示用户自查。
-      return restored
-    } catch (error) {
-      logError('⚠️ Templater 接力渲染失败，模板原样保留', error)
-      return text
-    }
-  }
-
-  /**
-   * 给 create_running_config 找一个真实存在的 TFile 当上下文。
-   * tp.file.* / tp.frontmatter.* 已整体掩码，上下文文件的身份不会泄漏进输出，
-   * 这里只需满足 parse_template 的急切读取。
-   */
-  private pickContextFile(): TFile | null {
-    try {
-      const active = this.app.workspace?.getActiveFile?.()
-      if (active instanceof TFile && active.extension === 'md') return active
-    } catch {
-      // workspace 未就绪等，走兜底
-    }
-    try {
-      const files = this.app.vault.getMarkdownFiles()
-      return files.length > 0 ? files[0] : null
-    } catch {
-      return null
-    }
-  }
-
-  private withTimeout(p: Promise<string>): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`Templater 渲染超时（${this.timeoutMs}ms)`)),
-        this.timeoutMs,
-      )
-      p.then(
-        (v) => {
-          clearTimeout(timer)
-          resolve(v)
-        },
-        (e: unknown) => {
-          clearTimeout(timer)
-          reject(e instanceof Error ? e : new Error(String(e)))
-        },
-      )
-    })
   }
 }
 

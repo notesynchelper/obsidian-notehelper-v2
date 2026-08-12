@@ -105,22 +105,6 @@ export enum PluginLanguage {
   EN = 'en',
 }
 
-/**
- * 图床接力 (ImageUploadRelay)
- *
- * 本地化完成后把 `![[笔记同步助手/images/*.jpg]]` 批量接力给已安装的图床
- * 上传类社区插件，最终文案变成 `![](https://user-cdn/...)`。
- *
- * 仅通过 app.commands.executeCommandById 调度第三方插件，不自己实现图床 SDK。
- * 详见 docs/plans/2026-04-20-image-upload-plugin-integration-design.md。
- */
-export enum ImageUploadRelay {
-  NONE = 'none',   // 默认：关闭
-  IAUP = 'iaup',   // obsidian-image-auto-upload-plugin (PicGo/PicList)
-  IUTK = 'iutk',   // image-upload-toolkit
-  CIUP = 'ciup',   // obsidian-image-uploader (Creling, 自定义 REST)
-}
-
 export type HighlightColorMapping = { [key in HighlightColors]: string }
 
 /** 单台设备独立的自动同步配置 */
@@ -196,9 +180,6 @@ export const DEFAULT_SETTINGS: OmnivoreSettings = {
   jpegQuality: 85,  // JPEG质量（0-100，默认85）
   imageDownloadRetries: 5,  // 图片下载重试次数（默认5，指数退避；图床源站未就绪属瞬态，多退避几次更稳）
   imageAttachmentFolder: '笔记同步助手/images',  // 图片存储文件夹
-  // 图床接力（本地化完成后批量调度第三方上传类插件）
-  imageUploadRelay: ImageUploadRelay.NONE,  // 默认关闭，不改变现有用户行为
-  imageRenameBeforeRelay: false,  // 默认关闭改名接力，不改变现有用户行为
   // 日记链接设置
   enableDiaryLinks: false,              // 启用日记链接功能
   diaryFolder: 'Daily Notes',           // 日记文件夹路径
@@ -282,11 +263,6 @@ export interface OmnivoreSettings {
   jpegQuality: number  // JPEG质量（0-100）
   imageDownloadRetries: number  // 图片下载重试次数
   imageAttachmentFolder: string  // 图片存储文件夹
-  // 图床接力设置
-  imageUploadRelay: ImageUploadRelay  // 本地化后接力上传到哪个第三方图床插件；默认 NONE
-  // 本地化后先用 Paste image rename 把 md5 哈希图片改成笔记标题名（可与上传接力串联，
-  // 改名在上传之前跑）；默认 false，不改变现有行为
-  imageRenameBeforeRelay: boolean
   // 日记链接设置
   enableDiaryLinks: boolean           // 启用日记链接功能
   diaryFolder: string                 // 日记文件夹路径

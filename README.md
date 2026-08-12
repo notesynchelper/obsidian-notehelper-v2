@@ -27,7 +27,6 @@ Works on desktop and mobile.
 | `obsidian.notebooksyncer.com` | Main sync API (GraphQL): pull your notes, mark them synced, delete on request; membership/quota status; market version-number check (`/plugversion-market`) |
 | `relay-1.bijitongbu.site`, `graph.bijitongbu.site` | Fallback endpoints for the same API (network resilience in mainland China) |
 | `relay-1/2/3/4.bijitongbu.site`, `pic.clipfx.app` | Image / attachment CDN. When you enable image or attachment localization, files referenced by your synced notes are downloaded from here into your vault |
-| `qiniupic.bijitongbu.site` | Static images shown in the settings page (QR codes for the official account / support group) |
 
 Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiannao.bijitongbu.site`, `bijitongbu.feishu.cn`) open in your browser only when you click them.
 
@@ -37,7 +36,9 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 
 **No self-update.** This build contains **no self-update mechanism**. Updates are delivered exclusively through the Obsidian community plugin catalog. After a manual sync the plugin may show a one-line passive reminder under the sync status notice when a newer market version exists (it only fetches a version number from `obsidian.notebooksyncer.com/plugversion-market`); clicking it opens Obsidian's **Settings → Community plugins** page, where you decide whether to update. The plugin never downloads or replaces its own files.
 
-**Optional integrations.** If you enable the "image upload relay" feature, the plugin invokes commands of other image-uploader plugins you have installed (e.g. *Image auto upload*, *Paste image rename*). This is off by default.
+**Static promotion in settings (disclosed).** The settings page shows your membership status and a **statically bundled** QR image (no network load) for purchasing the paid membership. Promotional QR images that the service embeds into note content are **stripped by the plugin** before notes are written to your vault — nothing promotional is written into your notes.
+
+**No cross-plugin scripting.** This edition does not invoke other plugins' commands and does not run Templater interpolation; `<% %>` tags in your templates are kept as-is. As a safety guard, files created by this plugin are marked so the Templater plugin (if installed) will not execute template commands found inside synced web content.
 
 ### Install & quick start
 
@@ -48,7 +49,7 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 
 ### Privacy & data location
 
-- Settings (including your API key) are stored in `.obsidian/plugins/notehelper-v2/data.json` inside your vault.
+- Settings (including your API key) are stored in `.obsidian/plugins/wechat-note-helper/data.json` inside your vault.
 - Downloaded images/attachments are stored in the attachment folder you configure.
 - The service stores the content you shared to the official account until you delete it (the settings page provides a "clear server content" action).
 
@@ -81,7 +82,6 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 | `obsidian.notebooksyncer.com` | 主同步 API（GraphQL）：拉取笔记、标记已同步、按请求删除；会员/配额状态；市场版本号检查（`/plugversion-market`） |
 | `relay-1.bijitongbu.site`、`graph.bijitongbu.site` | 同一 API 的备用端点（大陆网络容灾） |
 | `relay-1/2/3/4.bijitongbu.site`、`pic.clipfx.app` | 图片/附件 CDN。开启图片或附件本地化后，同步笔记中引用的文件从这里下载进仓库 |
-| `qiniupic.bijitongbu.site` | 设置页展示的静态图片（服务号 / 用户群二维码） |
 
 设置页里的文档链接（`www.notebooksyncer.com`、`shoujidiannao.bijitongbu.site`、`bijitongbu.feishu.cn`）仅在你点击时用浏览器打开。
 
@@ -91,7 +91,9 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 
 **没有自更新。** 本构建**不含任何自更新机制**，更新只通过 Obsidian 官方社区插件目录分发。手动同步后，若市场上有新版本，同步状态提示下方可能出现一行弱提醒（仅从 `obsidian.notebooksyncer.com/plugversion-market` 获取一个版本号）；点击后打开 Obsidian **设置 → 第三方插件** 页面，由你自行决定是否升级。插件永远不会下载或替换自身文件。
 
-**可选的插件联动。** 若你开启「图床接力」功能，插件会调用你已安装的其它图床上传插件的命令（如 *Image auto upload*、*Paste image rename*）。默认关闭。
+**设置页内的静态推广（已披露）。** 设置页会展示会员状态和一张**打包内置**的付费会员购买二维码（不从网络加载）。服务端拼进笔记正文的推广二维码会在写入仓库前被插件**剥除**——不会有任何推广内容写进你的笔记。
+
+**无跨插件脚本行为。** 本版本不调用其它插件的命令，也不执行 Templater 插值；模板里的 `<% %>` 标签会原样保留。作为安全防护，本插件创建的文件会被标记，避免已安装的 Templater 插件执行同步网页内容中出现的模板命令。
 
 ### 安装与快速上手
 
@@ -102,7 +104,7 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 
 ### 隐私与数据位置
 
-- 设置（含 API 密钥）保存在仓库内 `.obsidian/plugins/notehelper-v2/data.json`；
+- 设置（含 API 密钥）保存在仓库内 `.obsidian/plugins/wechat-note-helper/data.json`；
 - 下载的图片/附件保存在你配置的附件文件夹；
 - 你分享给服务号的内容保存在服务端，直到你删除（设置页提供「清空云端内容」操作）。
 
