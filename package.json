@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-notehelper-v2",
 	"version": "3.2.5",
-	"description": "Wechat Note Helper — sync notes and articles from WeChat Official Accounts and more into Obsidian",
+	"description": "Biji Tongbu (笔记同步助手) — sync notes and articles from WeChat Official Accounts and more into Obsidian",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

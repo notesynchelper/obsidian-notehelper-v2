@@ -1,4 +1,4 @@
-# Wechat Note Helper
+# Biji Tongbu
 
 [English](#english) | [中文](#中文)
 
@@ -6,7 +6,7 @@
 
 ## English
 
-Wechat Note Helper syncs content you collect through the WeChat official account **「笔记同步助手」(Note Sync Helper)** into your Obsidian vault: articles from WeChat Official Accounts, Xiaohongshu, Dedao, Yuanbao, Zhihu and other platforms, plus chat messages, images and file attachments you forward to the account.
+Biji Tongbu (笔记同步助手) syncs content you collect through the WeChat official account **「笔记同步助手」(Note Sync Helper)** into your Obsidian vault: articles from WeChat Official Accounts, Xiaohongshu, Dedao, Yuanbao, Zhihu and other platforms, plus chat messages, images and file attachments you forward to the account.
 
 Works on desktop and mobile.
 
