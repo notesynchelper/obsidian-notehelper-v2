@@ -14,9 +14,9 @@ export const HIDDEN_PREFIX_GUARD = '_'
 export const EMPTY_NAME_FALLBACK = 'untitled'
 // On Unix-like systems / is reserved and <>:"/\|?* as well as non-printable characters \u0000-\u001F on Windows
 // credit: https://github.com/sindresorhus/filename-reserved-regex
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- \u0000-\u001F 控制字符正是要从文件名里过滤的目标，属有意匹配
 export const ILLEGAL_CHAR_REGEX_FILE = /[<>:"/\\|?*\u0000-\u001F]/g
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- 同上：目录名同样要滤掉 Windows 保留的控制字符
 export const ILLEGAL_CHAR_REGEX_FOLDER = /[<>:"\\|?*\u0000-\u001F]/g
 
 export interface HighlightPoint {
@@ -90,6 +90,25 @@ export const parseDateTime = (str: string): DateTime => {
 
 export const wrapAround = (value: number, size: number): number => {
   return ((value % size) + size) % size
+}
+
+/**
+ * 末尾截断（与 lodash.truncate 的默认语义对齐，市场版去 lodash 依赖后自研）：
+ * 结果总长（含省略号）不超过 length；原文不超长时原样返回。
+ * 截断点若劈开增补平面字符（emoji 等），回退一位避免留下孤立代理项。
+ */
+export const truncateWithOmission = (
+  str: string,
+  length: number,
+  omission = '...',
+): string => {
+  if (str.length <= length) return str
+  const end = length - omission.length
+  if (end < 1) return omission
+  let cut = str.slice(0, end)
+  const last = cut.charCodeAt(cut.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1)
+  return cut + omission
 }
 
 export const unicodeSlug = (str: string, savedAt: string) => {
@@ -233,16 +252,15 @@ export const formatHighlightQuote = (
   return quote
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const parseFrontMatterFromContent = (content: string): any => {
+export const parseFrontMatterFromContent = (content: string): unknown => {
   // get front matter yaml from content
   // 兼容Windows行尾符 \r\n
   const frontMatter = content.match(/^---\r?\n(.*?)\r?\n---/s)
   if (!frontMatter) {
     return undefined
   }
-  // parse yaml - 返回any以保持与调用方的兼容性
-  return parseYaml(frontMatter[1])
+  // parse yaml —— YAML 顶层可能是映射/数组/标量，调用方自行收窄
+  return parseYaml(frontMatter[1]) as unknown
 }
 
 export const removeFrontMatterFromContent = (content: string): string => {
@@ -324,11 +342,14 @@ export const escapeContentHashtags = (text: string): string => {
     // 跳过 markdown 标题（包括 blockquote 中的标题）
     if (/^#{1,6}\s/.test(stripped)) return line
     // 转义 hashtags，跳过 inline code、URL、锚点链接 ](#...)、wikilink [[#...]]
+    // 注意：不用 lookbehind（iOS <16.4 的 WebView 不支持，正则在解析期就会抛错）。
+    // 改为把「行首/空白/左括号」前缀捕获进匹配并原样拼回；前缀被消费不影响相邻
+    // hashtag（`#a #b` 中 #b 的前缀空格未被 #a 的匹配占用）。
     return line.replace(
-      /(`[^`]+`)|(\bhttps?:\/\/\S+)|(\]\(#)|(\[\[#)|(?<=^|[\s(])#(?=[^\s#])/g,
-      (match, inlineCode, url, anchorLink, wikilink) => {
+      /(`[^`]+`)|(\bhttps?:\/\/\S+)|(\]\(#)|(\[\[#)|(^|[\s(])#(?=[^\s#])/g,
+      (match: string, inlineCode: string, url: string, anchorLink: string, wikilink: string, hashPrefix: string) => {
         if (inlineCode || url || anchorLink || wikilink) return match
-        return '\\#'
+        return `${hashPrefix}\\#`
       }
     )
   }).join('\n')

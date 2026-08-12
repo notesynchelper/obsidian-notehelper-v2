@@ -150,9 +150,9 @@ export function readSyncedFilter(
 	// New Bloom filter format (validate length to avoid corrupted data)
 	if (
 		typeof frontmatter.syncedIds === "string" &&
-		(frontmatter.syncedIds as string).length === BLOOM_ENCODED_LEN
+		(frontmatter.syncedIds).length === BLOOM_ENCODED_LEN
 	) {
-		return frontmatter.syncedIds as string;
+		return frontmatter.syncedIds;
 	}
 
 	// Legacy messages array → convert to Bloom filter

@@ -1,5 +1,4 @@
-import { App, TFile } from 'obsidian'
-import { log, logError } from '../logger'
+import { App } from 'obsidian'
 
 /**
  * Templater 接力（文章模板 / 消息模板 → Templater `<% %>` 插值）
@@ -297,7 +296,7 @@ export const suppressTemplaterTriggerOnCreate = (app: App, path: string): (() =>
     return () => {
       if (released) return
       released = true
-      setTimeout(() => {
+      window.setTimeout(() => {
         try {
           set.delete(path)
         } catch {

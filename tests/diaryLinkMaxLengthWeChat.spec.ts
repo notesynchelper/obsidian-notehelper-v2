@@ -38,6 +38,7 @@ jest.mock('../src/logger', () => ({
 }))
 
 jest.mock('../src/util', () => ({
+  ...jest.requireActual('../src/util'),
   formatDate: jest.fn((dateISO: string, _format: string) => dateISO.slice(0, 10)),
 }))
 

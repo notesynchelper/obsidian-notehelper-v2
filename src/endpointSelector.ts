@@ -151,15 +151,15 @@ const defaultDeps: EndpointSelectorDeps = {
 /** 带超时的请求包装。requestFn 本身无 abort 能力，这里只做 Promise race。 */
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
   new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`probe timeout ${ms}ms`)), ms)
+    const timer = window.setTimeout(() => reject(new Error(`probe timeout ${ms}ms`)), ms)
     p.then(
       (v) => {
-        clearTimeout(timer)
+        window.clearTimeout(timer)
         resolve(v)
       },
-      (e) => {
-        clearTimeout(timer)
-        reject(e)
+      (e: unknown) => {
+        window.clearTimeout(timer)
+        reject(e instanceof Error ? e : new Error(String(e)))
       },
     )
   })

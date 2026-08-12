@@ -53,13 +53,24 @@ const buildAuthHeaders = (apiKey: string): Record<string, string> => {
   return headers
 }
 
+/** 把任意 rejection 原因归一成 Error。Error 实例原样透传（status 等附加字段
+ *  保留）；非 Error 拒因若带数字 status（requestUrl throw 路径的裸对象），
+ *  把 status 复制到新 Error 上，业务错误分类（401/403/422 不 fallback）依赖它。 */
+const toError = (e: unknown): Error => {
+  if (e instanceof Error) return e
+  const err: Error & { status?: number } = new Error(String(e))
+  const status = (e as { status?: unknown } | null | undefined)?.status
+  if (typeof status === 'number') err.status = status
+  return err
+}
+
 /** Promise.race 超时包装（不取消底层 requestUrl，只切控制流） */
 const withTimeoutP = <T>(p: Promise<T>, ms: number): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => reject(new Error(`request timeout ${ms}ms`)), ms)
     p.then(
       (v) => { window.clearTimeout(timer); resolve(v) },
-      (e) => { window.clearTimeout(timer); reject(e) },
+      (e: unknown) => { window.clearTimeout(timer); reject(toError(e)) },
     )
   })
 
@@ -113,11 +124,11 @@ const requestWithFallback = async (
       const resp = await safeRequest(url, options, stepTimeout)
       if (resp.status >= 200 && resp.status < 300) {
         notifyRequestSuccess(i === 0, primaryFailureKind)
-        return resp as unknown as ReturnType<typeof requestUrl>
+        return resp
       }
       const err = Object.assign(new Error(`HTTP ${resp.status}`), {
         status: resp.status,
-      }) as Error & { status: number }
+      })
       const kind = classifyError(err)
       if (i === 0) primaryFailureKind = kind
       if (kind === 'business') {
@@ -143,7 +154,7 @@ const requestWithFallback = async (
     }
   }
   notifyRequestFailure()
-  throw lastError ?? new Error('所有入口均不可达')
+  throw lastError == null ? new Error('所有入口均不可达') : toError(lastError)
 }
 
 /** 非 GraphQL 路径的 fallback 工具：用于 getArticleCount / clearAllArticles 等
@@ -184,7 +195,7 @@ const apiPathFallback = async <T>(
       }
       const err = Object.assign(new Error(`HTTP ${resp.status}`), {
         status: resp.status,
-      }) as Error & { status: number }
+      })
       const kind = classifyError(err)
       if (i === 0) primaryFailureKind = kind
       if (kind === 'business') {
@@ -207,7 +218,7 @@ const apiPathFallback = async <T>(
     }
   }
   notifyRequestFailure()
-  throw lastError ?? new Error('所有入口均不可达')
+  throw lastError == null ? new Error('所有入口均不可达') : toError(lastError)
 }
 
 // 工具函数
@@ -802,7 +813,7 @@ export const deleteArticleById = async (
       headers: buildAuthHeaders(apiKey),
       body,
       throw: false,
-    } as Parameters<typeof requestUrl>[0])
+    })
     if (response.status < 200 || response.status >= 300) {
       logError('阅后即焚删除失败（私有 endpoint）非 2xx:', articleId, response.status)
       return false

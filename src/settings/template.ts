@@ -1,5 +1,4 @@
 import { Item, ItemType } from '@omnivore-app/api'
-import truncate from 'lodash/truncate'
 import Mustache from 'mustache'
 import { Notice, parseYaml, stringifyYaml } from 'obsidian'
 import {
@@ -10,6 +9,7 @@ import {
   removeFrontMatterFromContent,
   siteNameFromUrl,
   snakeToCamelCase,
+  truncateWithOmission,
 } from '../util'
 import { HighlightManagerId } from '.'
 import { logError } from '../logger'
@@ -27,7 +27,7 @@ type FunctionMap = {
  * YAML 特殊字符正则：冒号+空格、#注释、流式标记[]{}、引号、换行、
  * 以及 YAML 会自动转换类型的值（布尔、null）
  */
-const YAML_NEEDS_QUOTING = /[:\[\]{}#&*!|>'"%@`\n\r]/
+const YAML_NEEDS_QUOTING = /[:[\]{}#&*!|>'"%@`\n\r]/
 
 const YAML_RESERVED_WORDS = new Set([
   'true', 'false', 'yes', 'no', 'on', 'off', 'null', '~',
@@ -519,9 +519,7 @@ export const renderFilename = (
   const renderedFilename = render(item, filename, dateFormat)
 
   // truncate the filename to 100 characters
-  return truncate(renderedFilename, {
-    length: 100,
-  })
+  return truncateWithOmission(renderedFilename, 100)
 }
 
 export const renderLabels = (labels?: LabelView[]) => {
@@ -672,7 +670,7 @@ export const renderItemContent = (
     // Front matter 是 YAML 格式，字符串值中的换行会破坏 key: value 结构
     // 在 Mustache 渲染前将字符串值中的换行替换为空格
     const frontMatterArticleView: Record<string, unknown> = {}
-    for (const key of Object.keys(articleView as Record<string, unknown>)) {
+    for (const key of Object.keys(articleView)) {
       const value = (articleView as Record<string, unknown>)[key]
       frontMatterArticleView[key] =
         typeof value === 'string'
@@ -878,8 +876,8 @@ export const extractMessagePlainText = (item: Item): string => {
   const content = item.content || ''
   return content
     .replace(/<[^>]*>/g, '')                                    // 移除 HTML 标签
-    .replace(/!\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_, p, a) => a || p || '')  // ![[path|alt]] → alt or path
-    .replace(/\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_, p, a) => a || p || '')   // [[path|alt]] → alt or path
+    .replace(/!\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_m: string, p: string, a: string) => a || p || '')  // ![[path|alt]] → alt or path
+    .replace(/\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_m: string, p: string, a: string) => a || p || '')   // [[path|alt]] → alt or path
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                  // ![alt](url) → alt
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                   // [text](url) → text
     .replace(/\s+/g, ' ')

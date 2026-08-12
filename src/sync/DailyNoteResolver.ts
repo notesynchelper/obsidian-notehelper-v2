@@ -1,4 +1,10 @@
-import { App, TFile, normalizePath } from 'obsidian'
+import { App, TFile, moment, normalizePath } from 'obsidian'
+import type { Moment } from 'moment'
+
+// obsidian 的 `moment` 导出在 esModuleInterop 下被推断成不可调用的命名空间
+// 类型（typeof import('moment')），运行时它就是 moment 函数本体；这里标回
+// 可调用签名（本插件只用到 ISO 字符串入参）。
+const momentFn = moment as unknown as (input: string) => Moment
 import { OmnivoreSettings } from '../settings'
 import { formatDate } from '../util'
 import { log, logError } from '../logger'
@@ -73,7 +79,7 @@ export class DailyNoteResolver {
 
   private formatDiaryDate(dateISO: string, config: DiaryConfig): string {
     if (config.formatSource === 'plugin') {
-      return (window as any).moment(dateISO).format(config.dateFormat)
+      return momentFn(dateISO).format(config.dateFormat)
     }
     return formatDate(dateISO, config.dateFormat)
   }
@@ -107,7 +113,7 @@ export class DailyNoteResolver {
         return { file: null, reason: 'createFailed', errorMsg: msg }
       }
 
-      const momentDate = (window as any).moment(dateISO)
+      const momentDate = momentFn(dateISO)
       const newFile = await createDailyNote(momentDate)
 
       if (newFile instanceof TFile) {

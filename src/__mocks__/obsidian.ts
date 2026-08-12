@@ -5,6 +5,32 @@ export function parseYaml(text: string): unknown {
   return jsYaml.load(text)
 }
 
+// Mirror Obsidian 1.8.7+ getLanguage(): tests drive language detection through
+// a `globalThis.window.localStorage` stub (see forcedLang.spec), so delegate to
+// it; absent a stub, return '' to let detection fall through to moment/navigator.
+export function getLanguage(): string {
+  try {
+    const w = (globalThis as {
+      window?: { localStorage?: { getItem(k: string): string | null } }
+    }).window
+    return w?.localStorage?.getItem('language') || ''
+  } catch {
+    return ''
+  }
+}
+
+// Mirror Obsidian's `moment` export. Tests that stub `globalThis.window.moment`
+// (DailyNoteResolver.spec) keep intercepting; everything else gets real moment.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const realMoment = require('moment')
+export const moment = (...args: unknown[]): unknown => {
+  const w = (globalThis as {
+    window?: { moment?: (...a: unknown[]) => unknown }
+  }).window
+  if (w && typeof w.moment === 'function') return w.moment(...args)
+  return realMoment(...args)
+}
+
 export function stringifyYaml(obj: unknown): string {
   return jsYaml.dump(obj)
 }
@@ -58,6 +84,11 @@ export class FakeNoticeEl {
     return child
   }
 
+  // Obsidian 的 createDiv 简写（prefer-create-el 规则要求生产代码用它）
+  createDiv(opts?: { text?: string; cls?: string }): FakeNoticeEl {
+    return this.createEl('div', opts)
+  }
+
   addEventListener(type: string, fn: () => void): void {
     ;(this.listeners[type] ||= []).push(fn)
   }
@@ -96,6 +127,26 @@ export class Notice {
 export class Vault {}
 
 export class App {}
+
+// Minimal AbstractInputSuggest stub so `class FolderSuggest extends
+// AbstractInputSuggest` evaluates under Jest. Popover behaviour is only
+// exercised in the real-Obsidian e2e harness.
+export class AbstractInputSuggest<T> {
+  app: unknown
+  limit = 100
+  constructor(app: unknown, _textInputEl: unknown) {
+    this.app = app
+  }
+  setValue(_value: string): void {}
+  getValue(): string {
+    return ''
+  }
+  open(): void {}
+  close(): void {}
+  onSelect(_cb: (value: T, evt: MouseEvent | KeyboardEvent) => unknown): this {
+    return this
+  }
+}
 
 // Minimal Modal stub so modules that `extends Modal` (e.g. FirstSyncOpener's
 // FirstSyncNoticeModal) load under Jest. Real DOM/open behaviour is covered by

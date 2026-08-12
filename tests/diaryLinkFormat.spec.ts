@@ -2,7 +2,7 @@
  * 日记链接格式化测试
  * 测试双链前缀和显示文字截断功能
  */
-import { truncate } from 'lodash'
+import { truncateWithOmission } from '../src/util'
 
 jest.mock('obsidian', () => ({
   App: jest.fn(),
@@ -30,7 +30,7 @@ function generateWikiLink(
 ): string {
   let displayTitle = linkItem.displayTitle
   if (maxLength > 0) {
-    displayTitle = truncate(displayTitle, { length: maxLength, omission: '\u2026' })
+    displayTitle = truncateWithOmission(displayTitle, maxLength, '\u2026')
   }
 
   if (linkItem.isMessage && linkItem.anchorHeading) {

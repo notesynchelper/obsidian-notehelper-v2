@@ -115,30 +115,49 @@ export class SyncContext {
 		const routing = !this.disableIdRouting
 		if (!routing) log('🐞 调试模式：跳过跨库 ID 路由索引（仍标记合并文件用于防覆写）')
 		const startTime = Date.now()
+		// frontmatter 值是宽松 any；索引键只认标量 id（YAML 里 id 正常就是
+		// 字符串/数字）。对象值以前会退化成 "[object Object]" 垃圾键，现在直接跳过。
+		const scalarKey = (v: unknown): string | null => {
+			if (!v) return null
+			switch (typeof v) {
+				case 'string':
+					return v
+				case 'number':
+				case 'boolean':
+				case 'bigint':
+					return String(v)
+				default:
+					return null
+			}
+		}
+		const idOf = (v: unknown): string | null =>
+			v && typeof v === 'object' ? scalarKey((v as { id?: unknown }).id) : null
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file)
 			if (!cache?.frontmatter) continue
+			const fm = cache.frontmatter as Record<string, unknown>
 
 			// 单文件模式：front matter 顶层 id
-			const id = cache.frontmatter.id
+			const id = scalarKey(fm.id)
 			if (id && routing) {
-				this.singleIdIndex.set(String(id), file)
-				this.frontmatterIdIndex.set(String(id), file)
+				this.singleIdIndex.set(id, file)
+				this.frontmatterIdIndex.set(id, file)
 			}
 
 			// 合并模式：syncedIds (Bloom filter) 或旧 messages 数组
-			const syncedIds = cache.frontmatter.syncedIds
+			const syncedIds = fm.syncedIds
 			if (typeof syncedIds === 'string' && syncedIds.length === BLOOM_ENCODED_LEN) {
 				if (routing) this.bloomIndex.push({ filter: syncedIds, file })
 				this.mergeFilePaths.add(file.path)
 			} else {
-				const messages = cache.frontmatter.messages
+				const messages = fm.messages
 				if (Array.isArray(messages)) {
 					this.mergeFilePaths.add(file.path)
-					for (const msg of messages) {
-						if (msg?.id && routing) {
-							this.singleIdIndex.set(String(msg.id), file)
-							this.mergeIdIndex.set(String(msg.id), file)
+					for (const msg of messages as unknown[]) {
+						const msgId = idOf(msg)
+						if (msgId && routing) {
+							this.singleIdIndex.set(msgId, file)
+							this.mergeIdIndex.set(msgId, file)
 						}
 					}
 				}
@@ -146,13 +165,14 @@ export class SyncContext {
 
 			// 阅后即焚：精确数组 burnSyncedIds 的每个 id 也入 exact 索引，
 			// 让 burn 模式的 findFileByExactId 能命中 burn 写入的合并文件（不依赖 Bloom）。
-			const burnSyncedIds = cache.frontmatter.burnSyncedIds
+			const burnSyncedIds = fm.burnSyncedIds
 			if (Array.isArray(burnSyncedIds)) {
 				this.mergeFilePaths.add(file.path)
-				for (const rec of burnSyncedIds) {
-					if (rec && typeof rec === 'object' && rec.id && routing) {
-						this.singleIdIndex.set(String(rec.id), file)
-						this.mergeIdIndex.set(String(rec.id), file)
+				for (const rec of burnSyncedIds as unknown[]) {
+					const recId = idOf(rec)
+					if (recId && routing) {
+						this.singleIdIndex.set(recId, file)
+						this.mergeIdIndex.set(recId, file)
 					}
 				}
 			}

@@ -2,11 +2,19 @@ import {
   App,
   Modal,
   Notice,
-  Platform,
   PluginSettingTab,
   Setting,
   requestUrl,
 } from 'obsidian'
+
+// Obsidian 1.13 声明式设置条目的最小结构。本仓库 obsidian typings 还在 1.12
+// （无 SettingDefinitionItem 类型），先本地声明「纯索引条目」形状 ——
+// 只含 name/desc、不含 control/action/render 的条目对 1.13 运行时合法
+// （对应官方 SettingDefinitionEmpty），仅用于设置搜索索引。
+interface SettingSearchEntry {
+  name: string
+  desc?: string
+}
 import OmnivorePlugin from './main'
 import { FolderSuggest } from './settings/file-suggest'
 import {
@@ -31,7 +39,7 @@ import { getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh 
 import { VIP_QR_DATA_URI } from './assets/vipQrImage'
 import { log, logError, Logger } from './logger'
 import { MARKET_VERSION_CHECK_URL } from './updateReminder'
-import { t } from './i18n'
+import { t, type TKey } from './i18n'
 import {
   clampImageDownloadRetries,
   MAX_IMAGE_DOWNLOAD_RETRIES,
@@ -71,6 +79,68 @@ export class OmnivoreSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: OmnivorePlugin) {
     super(app, plugin)
     this.plugin = plugin
+  }
+
+  /**
+   * Obsidian 1.13+ 设置搜索索引（声明式设置 API 的最小采纳）。
+   * 只提供 name/desc 纯索引条目、不带 control：页面渲染仍由 display() 的
+   * 分区折叠版负责（搜索命中后打开本 tab，由用户就近定位）。1.13 之前的
+   * 版本不会调用本方法，多出的成员无副作用。
+   */
+  getSettingDefinitions(): SettingSearchEntry[] {
+    const entry = (nameKey: TKey, descKey?: TKey): SettingSearchEntry =>
+      descKey ? { name: t(nameKey), desc: t(descKey) } : { name: t(nameKey) }
+    return [
+      entry('settings.apiKey.name', 'settings.apiKey.desc'),
+      entry('settings.vip.heading'),
+      entry('settings.help.name', 'settings.help.desc'),
+      entry('settings.article.count.name', 'settings.article.count.desc'),
+      entry('settings.burnAfterReading.name', 'settings.burnAfterReading.desc'),
+      entry('settings.section.clearCloud.name', 'settings.section.clearCloud.desc'),
+      entry('settings.debugMode.name', 'settings.debugMode.desc'),
+      entry('settings.advanced.debugLog.name', 'settings.advanced.debugLog.desc'),
+      entry('settings.advanced.exportConfig.name', 'settings.advanced.exportConfig.desc'),
+      entry('settings.sync.syncOnStart.name', 'settings.sync.syncOnStart.desc'),
+      entry('settings.sync.frequency.name', 'settings.sync.frequency.desc'),
+      entry('settings.sync.lastSync.name', 'settings.sync.lastSync.desc'),
+      entry('settings.sync.articleFolder.name', 'settings.sync.articleFolder.desc'),
+      entry('settings.sync.articleFolderDateFormat.name', 'settings.sync.articleFolderDateFormat.desc'),
+      entry('settings.sync.attachmentFolder.name', 'settings.sync.attachmentFolder.desc'),
+      entry('settings.sync.articleFilename.name', 'settings.sync.articleFilename.desc'),
+      entry('settings.sync.articleFilenameDateFormat.name', 'settings.sync.articleFilenameDateFormat.desc'),
+      entry('settings.advanced.frontMatterTemplate.name'),
+      entry('settings.advanced.omitFrontmatterId.name', 'settings.advanced.omitFrontmatterId.desc'),
+      entry('settings.advanced.articleTemplate.name'),
+      entry('settings.sync.mergeMode.name'),
+      entry('settings.sync.messageSortOrder.name'),
+      entry('settings.sync.noMessageMarker.name', 'settings.sync.noMessageMarker.desc'),
+      entry('settings.sync.messageFolder.name', 'settings.sync.messageFolder.desc'),
+      entry('settings.sync.messageFileName.name'),
+      entry('settings.sync.messageFileDateFormat.name', 'settings.sync.messageFileDateFormat.desc'),
+      entry('settings.sync.mergeFileTemplate.name', 'settings.sync.mergeFileTemplate.desc'),
+      entry('settings.advanced.assistantTemplate.name', 'settings.advanced.assistantTemplate.desc'),
+      entry('settings.content.escapeHashtags.name', 'settings.content.escapeHashtags.desc'),
+      entry('settings.advanced.frontMatter.name'),
+      entry('settings.advanced.dateSavedFormat.name', 'settings.advanced.dateSavedFormat.desc'),
+      entry('settings.advanced.templateVars.name'),
+      entry('settings.image.mode.name'),
+      entry('settings.image.pngToJpeg.name', 'settings.image.pngToJpeg.desc'),
+      entry('settings.image.jpegQuality.name', 'settings.image.jpegQuality.desc'),
+      entry('settings.image.retries.name', 'settings.image.retries.desc'),
+      entry('settings.image.storageFolder.name', 'settings.image.storageFolder.desc'),
+      entry('settings.diary.enable.name', 'settings.diary.enable.desc'),
+      entry('settings.diary.autoCreate.name', 'settings.diary.autoCreate.desc'),
+      entry('settings.diary.folder.name', 'settings.diary.folder.desc'),
+      entry('settings.diary.dateFormat.name'),
+      entry('settings.diary.writePosition.name', 'settings.diary.writePosition.desc'),
+      entry('settings.diary.anchor.name'),
+      entry('settings.diary.linkOrder.name', 'settings.diary.linkOrder.desc'),
+      entry('settings.diary.linkType.name', 'settings.diary.linkType.desc'),
+      entry('settings.diary.linkPrefix.name', 'settings.diary.linkPrefix.desc'),
+      entry('settings.diary.linkMaxLength.name', 'settings.diary.linkMaxLength.desc'),
+      entry('settings.diary.noDiaryLinkId.name', 'settings.diary.noDiaryLinkId.desc'),
+      entry('settings.advanced.language.name', 'settings.advanced.language.desc'),
+    ]
   }
 
   // 市场版：二维码不走网络 —— 「购买高级权益」用打包进插件的静态 data URI
@@ -255,15 +325,15 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     })
     details.toggleAttribute('open', this.sectionOpen[key] === true)
     const summary = details.createEl('summary', { cls: 'nh-section-summary' })
-    const titles = summary.createEl('div', { cls: 'nh-section-titles' })
-    titles.createEl('div', { cls: 'nh-section-title', text: title })
+    const titles = summary.createDiv({ cls: 'nh-section-titles' })
+    titles.createDiv({ cls: 'nh-section-title', text: title })
     if (subtitle) {
-      titles.createEl('div', { cls: 'nh-section-sub', text: subtitle })
+      titles.createDiv({ cls: 'nh-section-sub', text: subtitle })
     }
     details.addEventListener('toggle', () => {
       this.sectionOpen[key] = details.open
     })
-    return details.createEl('div', { cls: 'nh-section-body' })
+    return details.createDiv({ cls: 'nh-section-body' })
   }
 
   /**
@@ -286,14 +356,14 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     // 重渲染保持滚动位置：display() 会被各下拉/开关反复调用整页重建，
     // 不还原 scrollTop 的话用户每改一项就被甩回页面顶部。
     const scroller =
-      (containerEl.closest('.vertical-tab-content') as HTMLElement | null) ??
+      (containerEl.closest('.vertical-tab-content')) ??
       containerEl
     const prevScrollTop = scroller.scrollTop
 
     containerEl.empty()
 
     // 🚀 延迟执行配置迁移（不阻塞页面显示）
-    setTimeout(() => {
+    window.setTimeout(() => {
       void this.checkAndPerformMigration()
     }, 500)
 
@@ -327,29 +397,29 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setHeading()
 
     // 会员状态展示区域
-    this.vipStatusContainer = vipBody.createEl('div', {
+    this.vipStatusContainer = vipBody.createDiv({
       cls: 'vip-status-container',
     })
 
     // 左侧：状态信息容器
-    const statusContainer = this.vipStatusContainer.createEl('div', {
+    const statusContainer = this.vipStatusContainer.createDiv({
       cls: 'vip-status-left',
     })
 
     // 会员状态信息
-    statusContainer.createEl('div', {
+    statusContainer.createDiv({
       cls: 'vip-status-info',
       text: t('settings.vip.loading'),
     })
 
     // 引导文字（放在状态信息下方）
-    statusContainer.createEl('div', {
+    statusContainer.createDiv({
       cls: 'vip-status-qr-label',
       text: t('settings.vip.loading'),
     })
 
     // 右侧：二维码容器
-    const qrContainer = this.vipStatusContainer.createEl('div', {
+    const qrContainer = this.vipStatusContainer.createDiv({
       cls: 'vip-status-qr',
     })
 
@@ -361,14 +431,14 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     })
 
     // 大号「刷新高级权益状态」引导按钮：走不缓存的实时接口，解决「会员状态有延迟」。
-    const freshRefreshWrap = vipBody.createEl('div', {
+    const freshRefreshWrap = vipBody.createDiv({
       cls: 'vip-refresh-fresh',
     })
     const freshRefreshBtn = freshRefreshWrap.createEl('button', {
       cls: 'vip-refresh-fresh-btn mod-cta',
       text: t('settings.vip.refreshFresh'),
     })
-    freshRefreshWrap.createEl('div', {
+    freshRefreshWrap.createDiv({
       cls: 'vip-refresh-fresh-hint',
       text: t('settings.vip.refreshFreshHint'),
     })
@@ -385,7 +455,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setDesc(
         createFragment((fragment) => {
           fragment.append(t('settings.help.desc'))
-          const linksEl = fragment.createEl('div', { cls: 'notehelper-help-links' })
+          const linksEl = fragment.createDiv({ cls: 'notehelper-help-links' })
           linksEl.createEl('a', {
             text: t('settings.help.link.tutorial'),
             href: 'https://bijitongbu.feishu.cn/wiki/RE0fw090CihOAykU8iKcqZFEntd',
@@ -486,7 +556,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
               )
               // ConfirmModal 只有 onConfirm 回调、没有 onCancel。
               // 用关闭事件兜底：若关闭时设置仍未变 true（即用户取消/点叉），回滚 toggle。
-              const origOnClose = confirmModal.onClose.bind(confirmModal)
+              const origOnClose = confirmModal.onClose.bind(confirmModal) as () => void
               confirmModal.onClose = () => {
                 origOnClose()
                 if (!this.plugin.settings.burnAfterReading) {
@@ -532,7 +602,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
                 articleCountSetting.setDesc(renderArticleCountDesc('0'))
 
                 // 自动刷新以获取最新数量
-                setTimeout(() => {
+                window.setTimeout(() => {
                   void (async () => {
                     try {
                       const count = await getArticleCount(
@@ -577,7 +647,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setDesc(
         createFragment((fragment) => {
           // 第一行：紫色排查提示
-          fragment.createEl('div', {
+          fragment.createDiv({
             cls: 'notehelper-debug-hint',
             text: t('settings.debugMode.hint'),
           })
@@ -603,7 +673,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
                 }
               })
               // ConfirmModal 只有 onConfirm 回调；用关闭事件兜底：关闭时若未确认（仍 false），回滚 toggle。
-              const origOnClose = confirmModal.onClose.bind(confirmModal)
+              const origOnClose = confirmModal.onClose.bind(confirmModal) as () => void
               confirmModal.onClose = () => {
                 origOnClose()
                 if (!this.plugin.settings.debugMode) {
@@ -647,7 +717,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
               const data = await this.app.vault.adapter.read(configPath)
               const blob = new Blob([data], { type: 'application/json' })
               const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
+              const a = createEl('a')
               a.href = url
               a.download = 'data.json'
               document.body.appendChild(a)
@@ -800,7 +870,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setDesc(t('settings.sync.articleFolderDateFormat.desc'))
       .addText((text) =>
         text
-          // eslint-disable-next-line obsidianmd/ui/sentence-case
+           
           .setPlaceholder(t('settings.sync.articleFolderDateFormat.placeholder'))
           .setValue(this.plugin.settings.folderDateFormat)
           .onChange(async (value) => {
@@ -865,7 +935,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setDesc(t('settings.sync.articleFilenameDateFormat.desc'))
       .addText((text) =>
         text
-          // eslint-disable-next-line obsidianmd/ui/sentence-case
+           
           .setPlaceholder(t('settings.sync.articleFilenameDateFormat.placeholder'))
           .setValue(this.plugin.settings.filenameDateFormat)
           .onChange(async (value) => {
@@ -894,31 +964,23 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         }),
       )
 
-    // 校验提示条：跟随模板输入实时显示 YAML 错误，避免只在同步时才在控制台冒 Notice
-    const frontMatterStatusEl = articleBody.createEl('div', {
+    // 校验提示条：跟随模板输入实时显示 YAML 错误，避免只在同步时才在控制台冒 Notice。
+    // 视觉状态全部走 styles.css 的 is-visible / is-error / is-warning 组合类。
+    const frontMatterStatusEl = articleBody.createDiv({
       cls: 'omnivore-frontmatter-status',
     })
-    frontMatterStatusEl.style.margin = '0 0 12px 0'
-    frontMatterStatusEl.style.padding = '0'
-    frontMatterStatusEl.style.fontSize = '12px'
-    frontMatterStatusEl.style.lineHeight = '1.5'
-    frontMatterStatusEl.style.whiteSpace = 'pre-wrap'
 
     const updateFrontMatterStatus = (template: string) => {
       const result = validateFrontMatterTemplate(template)
       if (result.valid && !result.sanitized) {
-        frontMatterStatusEl.style.display = 'none'
+        frontMatterStatusEl.removeClass('is-visible', 'is-error', 'is-warning')
         frontMatterStatusEl.setText('')
         return
       }
-      frontMatterStatusEl.style.display = 'block'
-      frontMatterStatusEl.style.padding = '8px 10px'
-      frontMatterStatusEl.style.borderRadius = '4px'
-      frontMatterStatusEl.style.marginTop = '8px'
+      frontMatterStatusEl.addClass('is-visible')
       if (!result.valid) {
-        frontMatterStatusEl.style.color = 'var(--text-error, #d00)'
-        frontMatterStatusEl.style.background = 'var(--background-modifier-error, #fff5f5)'
-        frontMatterStatusEl.style.border = '1px solid var(--background-modifier-error-hover, #f5c2c2)'
+        frontMatterStatusEl.removeClass('is-warning')
+        frontMatterStatusEl.addClass('is-error')
         frontMatterStatusEl.setText(
           t('settings.advanced.frontMatterTemplate.invalidWarning') +
           '\n' +
@@ -927,9 +989,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         )
       } else {
         // sanitize 兜底命中：valid=true 但有风险
-        frontMatterStatusEl.style.color = 'var(--text-warning, #d9932a)'
-        frontMatterStatusEl.style.background = 'var(--background-modifier-warning, #fef8e7)'
-        frontMatterStatusEl.style.border = '1px solid var(--background-modifier-border, #f2d48e)'
+        frontMatterStatusEl.removeClass('is-error')
+        frontMatterStatusEl.addClass('is-warning')
         frontMatterStatusEl.setText(t('settings.advanced.frontMatterTemplate.sanitizeWarning'))
       }
     }
@@ -985,7 +1046,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
                 [{ text: t('common.phonePcSyncLink'), url: PHONE_PC_SYNC_URL }]
               )
               // ConfirmModal 只有 onConfirm 回调；用关闭事件兜底：关闭时若未确认（仍 false），回滚 toggle。
-              const origOnClose = confirmModal.onClose.bind(confirmModal)
+              const origOnClose = confirmModal.onClose.bind(confirmModal) as () => void
               confirmModal.onClose = () => {
                 origOnClose()
                 if (!this.plugin.settings.omitFrontmatterId) {
@@ -1004,7 +1065,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
 
     // Templater 用法实时提示条（与合并文件模板的提示条同款样式）
-    const articleTplStatusEl = articleBody.createEl('div', {
+    const articleTplStatusEl = articleBody.createDiv({
       cls: 'notehelper-merge-template-status',
     })
     const updateArticleTemplaterStatus = (value: string) => {
@@ -1166,7 +1227,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
                   [{ text: t('common.phonePcSyncLink'), url: PHONE_PC_SYNC_URL }]
                 )
                 // ConfirmModal 只有 onConfirm 回调；用关闭事件兜底：关闭时若未确认（仍 false），回滚 toggle。
-                const origOnClose = confirmModal.onClose.bind(confirmModal)
+                const origOnClose = confirmModal.onClose.bind(confirmModal) as () => void
                 confirmModal.onClose = () => {
                   origOnClose()
                   if (!this.plugin.settings.disableMessageMarkers) {
@@ -1269,7 +1330,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         )
         .addText((text) =>
           text
-            // eslint-disable-next-line obsidianmd/ui/sentence-case
+             
             .setPlaceholder(t('settings.sync.messageFileDateFormat.placeholder'))
             .setValue(this.plugin.settings.singleFileDateFormat)
             .onChange(async (value) => {
@@ -1286,7 +1347,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       // 与「笔记属性模板」同款实时提示（只提示、不阻断保存）。
       // 样式走 styles.css 的 .notehelper-merge-template-status（含 .is-visible），
       // 不在 TS 里逐条写 element.style（obsidianmd/no-static-styles-assignment）。
-      const mergeTplStatusEl = messageBody.createEl('div', {
+      const mergeTplStatusEl = messageBody.createDiv({
         cls: 'notehelper-merge-template-status',
       })
       const updateMergeFileTemplateStatus = (value: string) => {
@@ -1367,7 +1428,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
 
     // Templater 用法实时提示条（与合并文件模板的提示条同款样式）
-    const assistantTplStatusEl = messageBody.createEl('div', {
+    const assistantTplStatusEl = messageBody.createDiv({
       cls: 'notehelper-merge-template-status',
     })
     const updateAssistantTemplaterStatus = (value: string) => {
@@ -1514,7 +1575,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setDesc(t('settings.advanced.dateSavedFormat.desc'))
       .addText((text) =>
         text
-          // eslint-disable-next-line obsidianmd/ui/sentence-case
+           
           .setPlaceholder(t('settings.advanced.dateSavedFormat.placeholder'))
           .setValue(this.plugin.settings.dateSavedFormat)
           .onChange(async (value) => {
@@ -1526,7 +1587,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
 
     new Setting(templateBody)
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
+       
       .setName(t('settings.advanced.templateVars.name'))
       .setDesc(
         createFragment((fragment) => {
@@ -1587,7 +1648,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     // 只在本地模式下显示高级选项
     if (this.plugin.settings.imageMode === ImageMode.LOCAL) {
       new Setting(imageBody)
-        // eslint-disable-next-line obsidianmd/ui/sentence-case
+         
         .setName(t('settings.image.pngToJpeg.name'))
         .setDesc(t('settings.image.pngToJpeg.desc'))
         .addToggle((toggle) =>
@@ -1773,7 +1834,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         .addText((text) => {
           new FolderSuggest(this.app, text.inputEl)
           text
-            // eslint-disable-next-line obsidianmd/ui/sentence-case
+             
             .setPlaceholder(t('settings.diary.folder.placeholder'))
             .setValue(this.plugin.settings.diaryFolder)
             .onChange(async (value) => {
@@ -1790,10 +1851,10 @@ export class OmnivoreSettingTab extends PluginSettingTab {
               t('settings.diary.dateFormat.descIntro'),
               fragment.createEl('br'),
               t('settings.diary.dateFormat.warnLiteral'),
-              fragment.createEl('code', { text: "'[Daily]' yyyy-MM-dd" }),
+              fragment.createEl('code', { text: t('settings.diary.dateFormat.exampleLiteral') }),
               fragment.createEl('br'),
               t('settings.diary.dateFormat.commonIntro'),
-              fragment.createEl('code', { text: "'日记' yyyy-MM-dd" }),
+              fragment.createEl('code', { text: t('settings.diary.dateFormat.exampleCommon') }),
               fragment.createEl('br'),
               fragment.createEl('a', {
                 text: t('settings.diary.dateFormat.docLink'),
@@ -1803,26 +1864,24 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           })
         )
         .addText((text) => {
-          const previewContainer = diaryBody.createDiv({ cls: 'setting-item-description' })
+          const previewContainer = diaryBody.createDiv({
+            cls: 'setting-item-description notehelper-inline-preview',
+          })
 
           const updatePreview = (format: string) => {
             try {
               const preview = formatDate(new Date().toISOString(), format)
               previewContainer.setText(`✓ ${t('settings.diary.dateFormat.previewOk')}: ${preview}`)
               previewContainer.removeClass('mod-warning')
-              // eslint-disable-next-line obsidianmd/no-static-styles-assignment
-              previewContainer.style.color = 'var(--text-muted)'
             } catch (e) {
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-              previewContainer.setText(`⚠️ ${t('settings.diary.dateFormat.previewError')}: ${e.message}`)
+              const msg = e instanceof Error ? e.message : String(e)
+              previewContainer.setText(`⚠️ ${t('settings.diary.dateFormat.previewError')}: ${msg}`)
               previewContainer.addClass('mod-warning')
-              // eslint-disable-next-line obsidianmd/no-static-styles-assignment
-              previewContainer.style.color = 'var(--text-error)'
             }
           }
 
           text
-            // eslint-disable-next-line obsidianmd/ui/sentence-case
+             
             .setPlaceholder(t('settings.diary.dateFormat.placeholder'))
             .setValue(this.plugin.settings.diaryDateFormat)
             .onChange(async (value) => {
@@ -1917,14 +1976,14 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         .setName(t('settings.diary.linkPrefix.name'))
         .setDesc(t('settings.diary.linkPrefix.desc'))
         .addText((text) => {
-          const previewContainer = diaryBody.createDiv({ cls: 'setting-item-description' })
+          const previewContainer = diaryBody.createDiv({
+            cls: 'setting-item-description notehelper-inline-preview',
+          })
 
           const updatePrefixPreview = (prefix: string) => {
             const sampleTitle = t('settings.diary.linkPrefix.sampleTitle')
             const sample = `${prefix}[[${sampleTitle}|${sampleTitle}]]`
             previewContainer.setText(`${t('settings.diary.linkPrefix.previewLabel')}: ${sample}`)
-            // eslint-disable-next-line obsidianmd/no-static-styles-assignment
-            previewContainer.style.color = 'var(--text-muted)'
           }
 
           text
@@ -1979,7 +2038,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
                   [{ text: t('common.phonePcSyncLink'), url: PHONE_PC_SYNC_URL }]
                 )
                 // ConfirmModal 只有 onConfirm 回调；用关闭事件兜底：关闭时若未确认（仍 false），回滚 toggle。
-                const origOnClose = confirmModal.onClose.bind(confirmModal)
+                const origOnClose = confirmModal.onClose.bind(confirmModal) as () => void
                 confirmModal.onClose = () => {
                   origOnClose()
                   if (!this.plugin.settings.disableDiaryLinkMarkers) {
@@ -2048,7 +2107,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
   private displayVersionInfo(containerEl: HTMLElement) {
     // 创建版本信息容器
-    const versionContainer = containerEl.createEl('div', {
+    const versionContainer = containerEl.createDiv({
       cls: 'omnivore-version-container',
     })
     versionContainer.setCssStyles({
@@ -2061,11 +2120,11 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
     // 当前版本显示
     const currentVersion = this.plugin.manifest.version
-    const versionInfo = versionContainer.createEl('div', {
+    const versionInfo = versionContainer.createDiv({
       cls: 'omnivore-version-info',
     })
 
-    const versionText = versionInfo.createEl('span', {
+    const versionText = versionInfo.createSpan({
       text: `${t('versionCheck.versionLabel')}: ${currentVersion}`,
       cls: 'omnivore-current-version',
     })
@@ -2160,7 +2219,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     }
 
     // 显示新的状态信息
-    const statusEl = versionContainer.createEl('div', {
+    const statusEl = versionContainer.createDiv({
       text: message,
       cls: 'omnivore-version-status',
     })
@@ -2198,7 +2257,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     if (isNewer) {
       log('🔄 显示更新提示')
       // 有新版本可用
-      const updateContainer = versionContainer.createEl('div', {
+      const updateContainer = versionContainer.createDiv({
         cls: 'omnivore-update-available',
       })
       updateContainer.setCssStyles({
@@ -2208,7 +2267,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         borderRadius: '4px',
       })
 
-      const updateText = updateContainer.createEl('div', {
+      const updateText = updateContainer.createDiv({
         text: `${t('versionCheck.foundNew')} ${latestVersion}!`,
         cls: 'omnivore-update-text',
       })

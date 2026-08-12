@@ -23,7 +23,7 @@ export class SyncNoticeManager {
 
   /** 终态状态 Notice（同步完成 / 没有新文章），升级提醒行挂在它下面 */
   private statusNotice: Notice | null = null
-  private statusHideTimer: ReturnType<typeof setTimeout> | null = null
+  private statusHideTimer: number | null = null
   private reminder: SyncUpdateReminder | null = null
   private reminderAttachedTo: Notice | null = null
 
@@ -100,10 +100,10 @@ export class SyncNoticeManager {
 
   private scheduleStatusHide(): void {
     if (!this.statusNotice) return
-    if (this.statusHideTimer) clearTimeout(this.statusHideTimer)
+    if (this.statusHideTimer) window.clearTimeout(this.statusHideTimer)
     const notice = this.statusNotice
     const ms = this.reminder ? STATUS_HIDE_WITH_REMINDER_MS : STATUS_HIDE_MS
-    this.statusHideTimer = setTimeout(() => {
+    this.statusHideTimer = window.setTimeout(() => {
       notice.hide()
       if (this.statusNotice === notice) this.statusNotice = null
     }, ms)
@@ -116,7 +116,7 @@ export class SyncNoticeManager {
     const el = (this.statusNotice as unknown as { noticeEl?: HTMLElement })
       .noticeEl
     if (!el || typeof el.createEl !== 'function') return
-    const line = el.createEl('div', {
+    const line = el.createDiv({
       text: this.reminder.text,
       cls: 'notehelper-update-reminder',
     })
@@ -186,7 +186,7 @@ export class SyncNoticeManager {
     if (this.phaseNotice) {
       this.phaseNotice.setMessage(text)
       const notice = this.phaseNotice
-      setTimeout(() => notice.hide(), 5000)
+      window.setTimeout(() => notice.hide(), 5000)
       this.phaseNotice = null
     }
   }

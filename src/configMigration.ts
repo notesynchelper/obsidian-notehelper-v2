@@ -1,5 +1,5 @@
 import { App, Notice, Plugin, normalizePath } from 'obsidian'
-import { DEFAULT_SETTINGS, MergeMode, OmnivoreSettings } from './settings'
+import { DEFAULT_SETTINGS, OmnivoreSettings } from './settings'
 import { log, logError } from './logger'
 
 interface BackupData {
@@ -271,7 +271,9 @@ export class ConfigMigrationManager {
    * 检查字段是否存在于对象中（区分"字段不存在"和"用户刻意设为空值"）
    */
   fieldExists(obj: Record<string, unknown>, key: string): boolean {
-    return Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined
+    // .call 在本 tsconfig（无 strictBindCallApply）下返回 any，显式标回 boolean
+    const hasOwn = Object.prototype.hasOwnProperty.call(obj, key) as boolean
+    return hasOwn && obj[key] !== undefined
   }
 
   /**

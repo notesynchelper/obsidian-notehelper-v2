@@ -5,23 +5,22 @@
 // dot-path keys is enough — see docs in CLAUDE.md and the i18n discussion thread.
 //
 // Language detection (three signals, in order of explicitness):
-//   1. window.localStorage.getItem('language') — only set when the user
-//      explicitly picked a language in Settings → About → Language. Leaving
-//      the dropdown on "Default" (auto-detect from OS) yields null/empty.
+//   1. Obsidian's public getLanguage() (1.8.7+) — the ISO code of the app's
+//      current UI language, covering both an explicit Settings → About →
+//      Language choice and the "Default" (OS-derived) case.
 //   2. window.moment.locale() — Obsidian mirrors the active UI language onto
-//      moment regardless of whether the user picked it manually or it was
-//      inferred from the OS, so this catches the "Default + Chinese OS" case
-//      that originally manifested as: Obsidian UI in Chinese but plugin in
-//      English.
+//      moment, kept as a belt-and-suspenders probe for contexts where
+//      getLanguage is unavailable (tests, very old hosts).
 //   3. navigator.language — last-ditch renderer signal, mostly useful before
 //      moment finishes loading.
 // Fallback when no signal resolves: Chinese, since this plugin's primary
 // audience is Chinese-speaking and we only ship zh + en dictionaries.
 //
 // Re-evaluation: t() reads the current language at every call. Obsidian rebuilds
-// the settings tab DOM on every open via display(), so a localStorage flip from
+// the settings tab DOM on every open via display(), so a language flip from
 // the test harness becomes visible without any extra wiring.
 
+import { getLanguage } from 'obsidian'
 import en, { type Dict } from './en'
 import zh from './zh'
 
@@ -29,11 +28,12 @@ export type SupportedLang = 'en' | 'zh'
 
 function safeGetLanguage(): string {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      return window.localStorage.getItem('language') || ''
+    if (typeof getLanguage === 'function') {
+      return getLanguage() || ''
     }
   } catch {
-    // localStorage may throw in restricted iframes / SSR-like contexts.
+    // getLanguage may be missing on exotic hosts (tests stub it via the
+    // obsidian module mock); detection then falls through to moment/navigator.
   }
   return ''
 }
@@ -126,13 +126,13 @@ function lookup(dict: Dict, key: string): string | undefined {
 
 export function t(key: TKey): string {
   const lang = getLang()
-  const fromActive = lookup(DICTS[lang], key as string)
+  const fromActive = lookup(DICTS[lang], key)
   if (fromActive !== undefined) return fromActive
   // Fall back to English to avoid showing the raw key if a translation goes missing
   // between releases. The jest spec keeps zh in sync with en, so this is just a
   // belt-and-suspenders runtime guard.
-  const fromEn = lookup(DICTS.en, key as string)
-  return fromEn !== undefined ? fromEn : (key as string)
+  const fromEn = lookup(DICTS.en, key)
+  return fromEn !== undefined ? fromEn : (key)
 }
 
 // Exposed for tests so we don't have to mutate window.localStorage in node.

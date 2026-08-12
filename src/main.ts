@@ -96,9 +96,9 @@ const PENDING_RETRY_COOLDOWN_MS = 60 * 1000
 
 export default class OmnivorePlugin extends Plugin {
   settings: OmnivoreSettings
-  private refreshTimeout: ReturnType<typeof setTimeout> | null = null
-  private imageResumeTimeout: ReturnType<typeof setTimeout> | null = null
-  private firstSyncNoticeTimeout: ReturnType<typeof setTimeout> | null = null
+  private refreshTimeout: number | null = null
+  private imageResumeTimeout: number | null = null
+  private firstSyncNoticeTimeout: number | null = null
   private syncing: boolean = false
   private debouncedSaveSettings: () => void
   configMigrationManager: ConfigMigrationManager
@@ -115,12 +115,12 @@ export default class OmnivorePlugin extends Plugin {
   }
 
   private createDebouncedSave(): () => void {
-    let timeout: ReturnType<typeof setTimeout> | null = null
+    let timeout: number | null = null
     return () => {
       if (timeout) {
-        clearTimeout(timeout)
+        window.clearTimeout(timeout)
       }
-      timeout = setTimeout(() => {
+      timeout = window.setTimeout(() => {
         log('💾 [防抖保存] 开始执行磁盘 I/O 操作...')
         const startTime = Date.now()
         const settingsToSave = { ...this.settings }
@@ -129,7 +129,7 @@ export default class OmnivorePlugin extends Plugin {
           const duration = Date.now() - startTime
           log(`💾 [防抖保存] saveData 完成，耗时: ${duration}ms`)
           if (this.configMigrationManager) {
-            void this.configMigrationManager.backupSettings(settingsToSave as OmnivoreSettings)
+            void this.configMigrationManager.backupSettings(settingsToSave)
               .then(() => log('💾 [防抖保存] 外部备份完成'))
               .catch((error: unknown) => log('外部备份时遇到问题，但设置已正常保存', error))
           }
@@ -236,7 +236,7 @@ export default class OmnivorePlugin extends Plugin {
     // 🚀 延迟非关键操作到启动完成后再执行
     this.app.workspace.onLayoutReady(() => {
       // 延迟3秒后执行非关键初始化（优化启动速度）
-      setTimeout(() => {
+      window.setTimeout(() => {
         void this.initializeNonCriticalFeatures()
       }, 3000)
     })
@@ -330,7 +330,7 @@ export default class OmnivorePlugin extends Plugin {
         if (this.settings.version !== this.manifest.version) {
           this.settings.version = this.manifest.version
           // 延迟保存，不阻塞启动
-          setTimeout(() => { void this.saveSettings() }, 3000)
+          window.setTimeout(() => { void this.saveSettings() }, 3000)
         }
       }
 
@@ -402,7 +402,7 @@ export default class OmnivorePlugin extends Plugin {
     if (this.getEffectiveAutoSync().syncOnStart) {
       this.app.workspace.onLayoutReady(() => {
         // 延迟2秒执行同步，确保启动完成
-        setTimeout(() => {
+        window.setTimeout(() => {
           if (this.settings.apiKey) {
             void this.fetchOmnivore(false).then(() => {
               this.refreshFileExplorer()
@@ -536,7 +536,7 @@ export default class OmnivorePlugin extends Plugin {
         try {
           if (await adapter.exists(filePath)) {
             const text = await adapter.read(filePath)
-            const parsed = JSON.parse(text)
+            const parsed: unknown = JSON.parse(text)
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
               return parsed
             }
@@ -564,7 +564,7 @@ export default class OmnivorePlugin extends Plugin {
    */
   private scheduleImageLocalizationResume(): void {
     if (this.imageResumeTimeout) return
-    this.imageResumeTimeout = setTimeout(() => {
+    this.imageResumeTimeout = window.setTimeout(() => {
       this.imageResumeTimeout = null
       void this.resumePendingImageLocalization()
     }, IMAGE_RESUME_DELAY_MS)
@@ -828,7 +828,7 @@ export default class OmnivorePlugin extends Plugin {
     // 不是 author/siteName/originalUrl/dateSaved —— metaFromFrontmatter 会两种命名都吃。
     const cache = this.app.metadataCache.getFileCache(file)
     const meta = metaFromFrontmatter(
-      cache?.frontmatter as Record<string, unknown> | undefined,
+      cache?.frontmatter,
     )
 
     try {
@@ -916,7 +916,7 @@ export default class OmnivorePlugin extends Plugin {
       return {
         file,
         meta: metaFromFrontmatter(
-          cache?.frontmatter as Record<string, unknown> | undefined,
+          cache?.frontmatter,
         ),
       }
     })
@@ -1001,17 +1001,17 @@ export default class OmnivorePlugin extends Plugin {
   onunload() {
     // 清理防抖timeout
     if (this.refreshTimeout) {
-      clearTimeout(this.refreshTimeout)
+      window.clearTimeout(this.refreshTimeout)
       this.refreshTimeout = null
     }
     // 清理续传延迟启动定时器
     if (this.imageResumeTimeout) {
-      clearTimeout(this.imageResumeTimeout)
+      window.clearTimeout(this.imageResumeTimeout)
       this.imageResumeTimeout = null
     }
     // 清理首次同步说明弹窗的延迟定时器
     if (this.firstSyncNoticeTimeout) {
-      clearTimeout(this.firstSyncNoticeTimeout)
+      window.clearTimeout(this.firstSyncNoticeTimeout)
       this.firstSyncNoticeTimeout = null
     }
     // 强制落盘 urlLocalMap + 续传队列，避免卸载/重启丢失最近的本地化状态
@@ -1040,7 +1040,7 @@ export default class OmnivorePlugin extends Plugin {
       // 同时备份配置到外部目录，防止插件升级时丢失
       if (this.configMigrationManager) {
         try {
-          await this.configMigrationManager.backupSettings(settingsToSave as OmnivoreSettings)
+          await this.configMigrationManager.backupSettings(settingsToSave)
           log('💾 [立即保存] 外部备份完成')
         } catch (error) {
           log('外部备份时遇到问题，但设置已正常保存', error)
@@ -2091,7 +2091,7 @@ export default class OmnivorePlugin extends Plugin {
   private scheduleFirstSyncNotice(): void {
     if (this.firstSyncNoticeTimeout) return
     const delay = resolveFirstSyncNoticeDelay(this.settings.firstSyncNoticeDelayMs)
-    this.firstSyncNoticeTimeout = setTimeout(() => {
+    this.firstSyncNoticeTimeout = window.setTimeout(() => {
       this.firstSyncNoticeTimeout = null
       try {
         new FirstSyncNoticeModal(this.app).open()

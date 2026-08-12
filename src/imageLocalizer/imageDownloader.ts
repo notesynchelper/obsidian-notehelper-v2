@@ -29,7 +29,7 @@ export function clampImageDownloadRetries(value: number): number {
  * 延迟函数
  */
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 /**
@@ -186,7 +186,7 @@ export function isCompleteImageResponse(
   // 根级 SVG 至少要有闭合根节点；只解码尾部，避免大 SVG 复制整份字符串。
   const head = new TextDecoder('utf-8')
     .decode(bytes.slice(0, Math.min(bytes.length, 256)))
-    .replace(/^﻿/, '')
+    .replace(/^\uFEFF/, '')
     .trimStart()
     .toLowerCase()
   if (head.startsWith('<svg') || (head.startsWith('<?xml') && head.includes('<svg'))) {
@@ -229,7 +229,7 @@ function matchesImageMagic(b: Uint8Array): boolean {
   try {
     const t = new TextDecoder('utf-8')
       .decode(b.slice(0, 256))
-      .replace(/^﻿/, '')
+      .replace(/^\uFEFF/, '')
       .trimStart()
       .toLowerCase()
     if (t.startsWith('<svg')) return true
@@ -256,7 +256,7 @@ function looksLikeTextPage(b: Uint8Array): boolean {
   try {
     const head = new TextDecoder('utf-8')
       .decode(b.slice(0, 64))
-      .replace(/^﻿/, '')
+      .replace(/^\uFEFF/, '')
       .trimStart()
       .toLowerCase()
     return head.startsWith('<') || head.startsWith('{') || head.startsWith('[')
@@ -304,7 +304,7 @@ function isOriginUrl(url: string): boolean {
  * race 已给原 promise 安装 resolve/reject handler，迟到结果不会触发保存或未处理拒绝。
  */
 async function requestImage(url: string, timeoutMs: number) {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let timeoutId: number | null = null
   const requestPromise = requestUrl({
     url,
     method: 'GET',
@@ -315,14 +315,14 @@ async function requestImage(url: string, timeoutMs: number) {
     },
   })
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
+    timeoutId = window.setTimeout(() => {
       reject(new ImageDownloadError(`请求超时（${timeoutMs}ms）`))
     }, timeoutMs)
   })
   try {
     return await Promise.race([requestPromise, timeoutPromise])
   } finally {
-    if (timeoutId !== null) clearTimeout(timeoutId)
+    if (timeoutId !== null) window.clearTimeout(timeoutId)
   }
 }
 

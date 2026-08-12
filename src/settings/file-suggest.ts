@@ -1,64 +1,34 @@
-// Credits go to Liam's Periodic Notes Plugin: https://github.com/liamcain/obsidian-periodic-notes
+// 市场版：改用 Obsidian 官方 AbstractInputSuggest（1.4.10+），替代旧的
+// Popper.js 自制 TextInputSuggest（触碰内部 app.dom/app.keymap，审核不允许）。
 
-import { TAbstractFile, TFile, TFolder } from 'obsidian'
+import { AbstractInputSuggest, App, TFolder } from 'obsidian'
 
-import { TextInputSuggest } from './suggest'
-
-export class FileSuggest extends TextInputSuggest<TFile> {
-  getSuggestions(inputStr: string): TFile[] {
-    const abstractFiles = this.app.vault.getAllLoadedFiles()
-    const files: TFile[] = []
-    const lowerCaseInputStr = inputStr.toLowerCase()
-
-    abstractFiles.forEach((file: TAbstractFile) => {
-      if (
-        file instanceof TFile &&
-        file.extension === 'md' &&
-        file.path.toLowerCase().contains(lowerCaseInputStr)
-      ) {
-        files.push(file)
-      }
-    })
-
-    return files
+export class FolderSuggest extends AbstractInputSuggest<TFolder> {
+  constructor(
+    app: App,
+    private readonly folderInputEl: HTMLInputElement,
+  ) {
+    super(app, folderInputEl)
   }
 
-  renderSuggestion(file: TFile, el: HTMLElement): void {
-    el.setText(file.path)
-  }
-
-  selectSuggestion(file: TFile): void {
-    this.inputEl.value = file.path
-    this.inputEl.trigger('input')
-    this.close()
-  }
-}
-
-export class FolderSuggest extends TextInputSuggest<TFolder> {
   getSuggestions(inputStr: string): TFolder[] {
-    const abstractFiles = this.app.vault.getAllLoadedFiles()
-    const folders: TFolder[] = []
     const lowerCaseInputStr = inputStr.toLowerCase()
-
-    abstractFiles.forEach((folder: TAbstractFile) => {
-      if (
-        folder instanceof TFolder &&
-        folder.path.toLowerCase().contains(lowerCaseInputStr)
-      ) {
-        folders.push(folder)
+    const folders: TFolder[] = []
+    for (const f of this.app.vault.getAllLoadedFiles()) {
+      if (f instanceof TFolder && f.path.toLowerCase().contains(lowerCaseInputStr)) {
+        folders.push(f)
       }
-    })
-
+    }
     return folders
   }
 
-  renderSuggestion(file: TFolder, el: HTMLElement): void {
-    el.setText(file.path)
+  renderSuggestion(folder: TFolder, el: HTMLElement): void {
+    el.setText(folder.path)
   }
 
-  selectSuggestion(file: TFolder): void {
-    this.inputEl.value = file.path
-    this.inputEl.trigger('input')
+  selectSuggestion(folder: TFolder): void {
+    this.folderInputEl.value = folder.path
+    this.folderInputEl.trigger('input')
     this.close()
   }
 }

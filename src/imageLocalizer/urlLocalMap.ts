@@ -26,7 +26,7 @@ export class UrlLocalMap {
   private entries: Map<string, Map<string, string>> = new Map()
   private persister?: UrlLocalMapPersister
   private dirty = false
-  private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private saveTimer: number | null = null
 
   constructor(persister?: UrlLocalMapPersister) {
     this.persister = persister
@@ -163,7 +163,7 @@ export class UrlLocalMap {
    */
   async flush(): Promise<void> {
     if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
+      window.clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
     if (!this.dirty || !this.persister) return
@@ -180,7 +180,7 @@ export class UrlLocalMap {
     if (!this.persister) return
     this.dirty = true
     if (this.saveTimer) return
-    this.saveTimer = setTimeout(() => {
+    this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null
       if (!this.dirty) return
       this.dirty = false

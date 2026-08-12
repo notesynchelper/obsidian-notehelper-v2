@@ -1,12 +1,10 @@
 /**
  * calculateMD5 golden-value regression test.
  *
- * 背景：为压缩打包体积，imageProcessor 的 crypto-js 引入从整包
- * `import CryptoJS from 'crypto-js'`（~230KB）改为按子模块
- * `import CryptoJS from 'crypto-js/core'` + 副作用 `import 'crypto-js/md5'`。
- * 其它测试都把 calculateMD5 mock 掉了，真实 MD5 路径无人覆盖，因此这里
- * 用整包 crypto-js 预先算好的“黄金值”锁死输出，保证子模块引入与 minify
- * 之后哈希仍然逐字节一致 —— 哈希变了会改变图片本地化文件名，破坏跨版本去重。
+ * 背景：黄金值最初由整包 crypto-js 计算；市场版（审核弃用停维护的 crypto-js）
+ * 已换 js-md5 实现。其它测试都把 calculateMD5 mock 掉了，真实 MD5 路径无人
+ * 覆盖，因此这里用预先算好的"黄金值"锁死输出，保证换实现与 minify 之后哈希
+ * 仍然逐字节一致 —— 哈希变了会改变图片本地化文件名，破坏跨版本去重。
  *
  * 大文件摘要刻意只覆盖头、中、尾各 15KB，因此允许未采样区不同的内容撞名。
  * 这是附件文件名向后兼容与移动端性能契约；防串图由 saveImageToVault 在复用前
@@ -14,7 +12,7 @@
  */
 import { calculateMD5 } from '../src/imageLocalizer/imageProcessor'
 
-describe('calculateMD5 (crypto-js submodule import)', () => {
+describe('calculateMD5 (js-md5 implementation, crypto-js era golden values)', () => {
   it('小文件按完整内容哈希，结果与整包 crypto-js 一致', () => {
     const small = new Uint8Array([0, 1, 2, 3, 4, 5, 250, 128, 99, 42, 7, 255, 16, 32, 64])
     expect(calculateMD5(small.buffer)).toBe('7405146128c7e107b6ab6b5f94744478_MD5')

@@ -19,9 +19,11 @@ class LoadedImage {
   }
 }
 
+// 生产代码按 obsidianmd/prefer-create-el 规则使用 Obsidian 全局 createEl 助手
+// 创建 canvas；node 测试环境没有这个全局，这里按用例 stub。
 describe('PNG 转换失败路径释放 Blob URL', () => {
   const imageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Image')
-  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  const createElDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'createEl')
 
   beforeEach(() => {
     Object.defineProperty(globalThis, 'Image', {
@@ -39,23 +41,21 @@ describe('PNG 转换失败路径释放 Blob URL', () => {
     } else {
       delete (globalThis as { Image?: unknown }).Image
     }
-    if (documentDescriptor) {
-      Object.defineProperty(globalThis, 'document', documentDescriptor)
+    if (createElDescriptor) {
+      Object.defineProperty(globalThis, 'createEl', createElDescriptor)
     } else {
-      delete (globalThis as { document?: unknown }).document
+      delete (globalThis as { createEl?: unknown }).createEl
     }
   })
 
   test('Canvas context 创建失败时仍 revoke', async () => {
-    Object.defineProperty(globalThis, 'document', {
+    Object.defineProperty(globalThis, 'createEl', {
       configurable: true,
-      value: {
-        createElement: jest.fn(() => ({
-          width: 0,
-          height: 0,
-          getContext: () => null,
-        })),
-      },
+      value: jest.fn(() => ({
+        width: 0,
+        height: 0,
+        getContext: () => null,
+      })),
     })
 
     await expect(convertPngToJpeg(new ArrayBuffer(8))).rejects.toThrow(
@@ -65,20 +65,18 @@ describe('PNG 转换失败路径释放 Blob URL', () => {
   })
 
   test('Canvas toBlob 返回 null 时仍 revoke', async () => {
-    Object.defineProperty(globalThis, 'document', {
+    Object.defineProperty(globalThis, 'createEl', {
       configurable: true,
-      value: {
-        createElement: jest.fn(() => ({
-          width: 0,
-          height: 0,
-          getContext: () => ({
-            fillStyle: '',
-            fillRect: jest.fn(),
-            drawImage: jest.fn(),
-          }),
-          toBlob: (callback: (blob: Blob | null) => void) => callback(null),
-        })),
-      },
+      value: jest.fn(() => ({
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillStyle: '',
+          fillRect: jest.fn(),
+          drawImage: jest.fn(),
+        }),
+        toBlob: (callback: (blob: Blob | null) => void) => callback(null),
+      })),
     })
 
     await expect(convertPngToJpeg(new ArrayBuffer(8))).rejects.toThrow(

@@ -3,22 +3,18 @@
  * 负责 MD5 计算、格式检测、PNG→JPEG 转换
  */
 
-import { Vault, normalizePath, TAbstractFile, TFile, TFolder } from 'obsidian'
+import { Vault, normalizePath, TAbstractFile, TFolder } from 'obsidian'
 import { log, logError } from '../logger'
-// 仅引入 core（提供 lib.WordArray）+ lib-typedarrays + md5 子模块，避免把整个
-// crypto-js（~230KB）打进包。lib-typedarrays 不能省：它给 WordArray.create 装上
-// 对 Uint8Array 的类型化数组识别，整包 crypto-js 默认带它；省掉会让传 Uint8Array
-// 的哈希结果变化 → 改变图片本地化文件名 → 破坏跨版本去重。
-import CryptoJS from 'crypto-js/core'
-import 'crypto-js/lib-typedarrays'
-import 'crypto-js/md5'
+// 市场版审核建议弃用 crypto-js（已停维护），换 js-md5（纯 JS、~10KB）。
+// 已实测两者对 Uint8Array 输入的 MD5 hex 输出逐字节一致 —— 哈希值决定图片
+// 本地化落盘文件名，跨版本必须完全不变，否则破坏老用户附件去重。
+import { md5 } from 'js-md5'
 
 const MD5_SAMPLE_SIZE = 15000
 const MD5_SAMPLE_THRESHOLD = MD5_SAMPLE_SIZE * 3
 
 function calculateHexMD5(data: Uint8Array): string {
-  const wordArray = CryptoJS.lib.WordArray.create(data as unknown as number[])
-  return CryptoJS.MD5(wordArray).toString()
+  return md5(data)
 }
 
 /**
@@ -118,14 +114,20 @@ async function fileHasSameContent(
   data: ArrayBuffer,
 ): Promise<boolean> {
   let existingData: ArrayBuffer
+  // readBinary 声明只收 TFile，但这里刻意做鸭子类型双轨（真实 TFile / 只认路径的
+  // 轻量 Vault 替身），失败统一按「不同内容」处理，所以把方法放宽成结构化签名，
+  // 而不是把条目硬 cast 成 TFile。
+  const readBinary = vault.readBinary.bind(vault) as (
+    target: TAbstractFile | string,
+  ) => Promise<ArrayBuffer>
   try {
     // 对同名条目直接尝试移动端安全的 Vault API；若它实际是文件夹或已损坏，
     // readBinary 会失败并按“不同内容”处理，不能误复用。
-    existingData = await vault.readBinary(file as TFile)
+    existingData = await readBinary(file)
   } catch (error) {
     try {
       // 兼容只实现了路径参数的轻量 Vault 替身；真实 Obsidian 使用上面的 TFile。
-      existingData = await vault.readBinary(file.path as unknown as TFile)
+      existingData = await readBinary(file.path)
     } catch {
       logError(`读取已有图片失败，按文件名碰撞处理: ${file.path}`, error)
       return false
@@ -271,7 +273,7 @@ export async function convertPngToJpeg(
       img.onload = () => {
         try {
           // 创建 Canvas
-          const canvas = document.createElement('canvas')
+          const canvas = createEl('canvas')
           canvas.width = img.width
           canvas.height = img.height
 

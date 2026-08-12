@@ -18,7 +18,7 @@ const MAX_ATTACHMENT_DOWNLOAD_RETRIES = 5
  * 延迟函数
  */
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 /**
@@ -83,7 +83,7 @@ function isPlaceholderResponse(
 }
 
 async function requestAttachment(url: string) {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let timeoutId: number | null = null
   const requestPromise = requestUrl({
     url,
     method: 'GET',
@@ -94,7 +94,7 @@ async function requestAttachment(url: string) {
     },
   })
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(
+    timeoutId = window.setTimeout(
       () => reject(new Error(`请求超时（${ATTACHMENT_REQUEST_TIMEOUT_MS}ms）`)),
       ATTACHMENT_REQUEST_TIMEOUT_MS,
     )
@@ -102,7 +102,7 @@ async function requestAttachment(url: string) {
   try {
     return await Promise.race([requestPromise, timeoutPromise])
   } finally {
-    if (timeoutId !== null) clearTimeout(timeoutId)
+    if (timeoutId !== null) window.clearTimeout(timeoutId)
   }
 }
 

@@ -1,6 +1,6 @@
 import { Item } from '@omnivore-app/api'
-import { App, TFile } from 'obsidian'
-import truncate from 'lodash/truncate'
+import { App } from 'obsidian'
+import { truncateWithOmission } from '../util'
 import { OmnivoreSettings, DiaryLinkType, DiaryWritePosition, DiaryLinkOrder } from '../settings'
 import { DailyNoteResolver } from './DailyNoteResolver'
 import { latestSyncCursor, isCursorCovered } from './cursorDedupe'
@@ -169,7 +169,7 @@ export class DiaryLinkProcessor {
 
 		let displayTitle = linkItem.displayTitle
 		if (maxLen > 0) {
-			displayTitle = truncate(displayTitle, { length: maxLen, omission: '\u2026' })
+			displayTitle = truncateWithOmission(displayTitle, maxLen, '\u2026')
 		}
 		displayTitle = this.sanitizeWikiLinkAlias(displayTitle)
 

@@ -4,6 +4,10 @@ module.exports = {
   // The test environment that Jest will use
   testEnvironment: "node",
 
+  // node 环境没有 window；生产代码统一用 window.* 计时器（popout 兼容），
+  // 这里给 window → globalThis 的最小别名。
+  setupFiles: ["<rootDir>/tests/setup-window-alias.js"],
+
   // The root directory for Jest tests
   roots: ["<rootDir>/tests"],
 

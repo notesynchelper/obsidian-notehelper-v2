@@ -270,3 +270,38 @@ VIP Status Display
 	cursor: pointer;
 	text-decoration: underline;
 }
+
+/* frontmatter 模板校验提示条：默认隐藏，is-visible 展开，
+   is-error / is-warning 决定配色（替代旧的内联样式，市场版审核要求） */
+.omnivore-frontmatter-status {
+	display: none;
+	margin: 0 0 12px 0;
+	padding: 0;
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+.omnivore-frontmatter-status.is-visible {
+	display: block;
+	padding: 8px 10px;
+	border-radius: 4px;
+	margin-top: 8px;
+}
+.omnivore-frontmatter-status.is-error {
+	color: var(--text-error, #d00);
+	background: var(--background-modifier-error, #fff5f5);
+	border: 1px solid var(--background-modifier-error-hover, #f5c2c2);
+}
+.omnivore-frontmatter-status.is-warning {
+	color: var(--text-warning, #d9932a);
+	background: var(--background-modifier-warning, #fef8e7);
+	border: 1px solid var(--background-modifier-border, #f2d48e);
+}
+
+/* 设置页里的行内预览（日记日期格式 / 双链前缀）：默认次级色，出错转警示色 */
+.notehelper-inline-preview {
+	color: var(--text-muted);
+}
+.notehelper-inline-preview.mod-warning {
+	color: var(--text-error);
+}

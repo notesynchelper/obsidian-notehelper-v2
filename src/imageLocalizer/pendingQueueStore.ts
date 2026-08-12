@@ -51,7 +51,7 @@ export class PendingLocalizeStore {
   private records: Map<string, PendingTaskRecord> = new Map()
   private persister?: PendingStorePersister
   private dirty = false
-  private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private saveTimer: number | null = null
 
   constructor(persister?: PendingStorePersister) {
     this.persister = persister
@@ -103,8 +103,9 @@ export class PendingLocalizeStore {
   upsert(record: PendingTaskRecord): void {
     if (!record.filePath) return
     if (!this.records.has(record.filePath) && this.records.size >= MAX_PENDING_TASKS) {
-      const oldest = this.records.keys().next().value
-      if (oldest !== undefined) {
+      const first = this.records.keys().next()
+      if (!first.done) {
+        const oldest = first.value
         this.records.delete(oldest)
         log(`⚠️ 图片本地化续传队列已达上限 ${MAX_PENDING_TASKS}，淘汰最旧任务: ${oldest}`)
       }
@@ -152,7 +153,7 @@ export class PendingLocalizeStore {
    */
   async flush(): Promise<void> {
     if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
+      window.clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
     if (!this.dirty || !this.persister) return
@@ -174,7 +175,7 @@ export class PendingLocalizeStore {
     if (!this.persister) return
     this.dirty = true
     if (this.saveTimer) return
-    this.saveTimer = setTimeout(() => {
+    this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null
       if (!this.dirty) return
       this.dirty = false

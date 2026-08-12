@@ -162,6 +162,21 @@ describe('getArticleCount fallback', () => {
   })
 
   it('primary 401 → 不 fallback，立即抛', async () => {
+    // 预置端点缓存：本用例只验证「business 错误不 fallback」。不预置的话
+    // getOrderedFallbackBases 会先 raceProbe 扫 4 个 base，而探测 GET 与业务
+    // GET 的 URL 完全相同，按 URL 过滤会把 4 次探测也计进来（历史上此断言
+    // 因此长期不稳）。
+    const w = (globalThis as unknown as {
+      window: { localStorage: { setItem(k: string, v: string): void } }
+    }).window
+    w.localStorage.setItem(
+      'notehelper:endpointCache',
+      JSON.stringify({
+        base: 'https://relay-1.bijitongbu.site/helper',
+        latencyMs: 10,
+        chosenAt: Date.now(),
+      }),
+    )
     const obsidian = jest.requireMock('obsidian') as { requestUrl: jest.Mock }
     obsidian.requestUrl.mockImplementation(
       async (opt: { url: string; method?: string }) => {
@@ -173,11 +188,10 @@ describe('getArticleCount fallback', () => {
     await expect(
       getArticleCount('https://obsidian.notebooksyncer.com/api/graphql', 'wrong-key')
     ).rejects.toThrow(/401/)
-    // 只该打 primary 一次（probe 也可能打，但业务请求只 1 次）
+    // 缓存命中时不触发探测：业务请求只该打 primary 一次，绝不 fallback 到 4 个 base
     const businessCalls = requestCalls.filter(c =>
       c.url.endsWith('/api/stats/article-count')
     )
-    // probe 1 + 业务 1 = 至少 1, 不应该 4 次
     expect(businessCalls.length).toBeLessThan(4)
   })
 

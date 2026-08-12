@@ -124,10 +124,17 @@ export function renderSectionMeta(fm: Record<string, unknown>): string {
 		if (Array.isArray(v)) {
 			if (v.some((e) => e !== null && typeof e === 'object')) continue
 			raw = v.join(', ')
-		} else if (typeof v === 'object') {
-			continue
-		} else {
+		} else if (typeof v === 'string') {
+			raw = v
+		} else if (
+			typeof v === 'number' ||
+			typeof v === 'boolean' ||
+			typeof v === 'bigint'
+		) {
 			raw = String(v)
+		} else {
+			// 对象/symbol/function 等非标量：属性块里没有可读表示，跳过
+			continue
 		}
 		// 折叠换行：callout 每行一个 `> `，值里的换行会破坏块结构（frontMatterTemplate
 		// 渲染时已折过一道，这里对存量/手填值再兜底一次）。
@@ -352,7 +359,7 @@ export class MergeProcessor {
 			// 文件级 frontmatter（与 NONE 模式一致）；多篇 digest / 企微文件只有 syncedIds、无 id。
 			// 这样用户给 digest 手填 tags 之类也不会被误判成单篇。
 			const existingIsSingleFull =
-				typeof parsedFm.id === 'string' && (parsedFm.id as string).length > 0
+				typeof parsedFm.id === 'string' && (parsedFm.id).length > 0
 			// 「已有正文」= 文件头之外已有内容。启用合并文件模板时新建文件天生带文件头，
 			// 裸 body.trim() 会把它误判成「已是 digest」，让单篇文章属性被错误下沉进 callout。
 			const existingHasBody = mergeBodyHasContent(body, headerRe)
