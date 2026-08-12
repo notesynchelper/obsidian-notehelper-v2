@@ -1,0 +1,272 @@
+/*----------------------------------------------------------------
+设置页分区折叠（Phase 1 IA 重排）：原生 <details>/<summary>，
+不用 max-height 动画（内容超高会被截断），不用全局事件绑定。
+----------------------------------------------------------------*/
+.nh-section {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 8px;
+	padding-top: 2px;
+}
+
+/* 折叠箭头 = Chromium 原生 disclosure marker（summary 默认 display:list-item）。
+   不自绘：summary 一旦改成 flex/block/list-style:none，原生 marker 就没了。 */
+.nh-section-summary {
+	cursor: pointer;
+	padding: 10px 2px;
+	user-select: none;
+}
+
+.nh-section-summary::marker {
+	color: var(--text-muted);
+}
+
+/* 原生 marker 是 inside 定位的 inline 盒；标题容器必须 inline-block 才能与
+   marker 同行（block 会把 marker 挤到单独一行） */
+.nh-section-titles {
+	display: inline-block;
+	vertical-align: middle;
+	margin-left: 4px;
+}
+
+.nh-section-title {
+	font-weight: 600;
+	font-size: var(--font-ui-medium, 15px);
+}
+
+.nh-section-sub {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small, 12px);
+}
+
+.nh-section-body {
+	padding: 0 2px 8px;
+}
+
+/* 二级折叠（嵌套在一级分区 body 内）：更轻的标题 + 缩进，
+   视觉权重明显低于一级 summary */
+.nh-subsection {
+	border-top: 1px dashed var(--background-modifier-border);
+	margin: 4px 0 4px 12px;
+	padding-top: 0;
+}
+
+.nh-subsection > .nh-section-summary {
+	padding: 8px 2px;
+}
+
+.nh-subsection > .nh-section-summary .nh-section-title {
+	font-weight: 600;
+	font-size: var(--font-ui-small, 13px);
+}
+
+.nh-subsection > .nh-section-summary .nh-section-sub {
+	font-size: 11px;
+}
+
+.nh-subsection > .nh-section-body {
+	padding-left: 6px;
+}
+
+.omnivore-highlight-config-container {
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.modal.mod-settings
+  button:not(.mod-cta):not(.mod-warning).omnivore-btn.omnivore-btn-primary {
+   	color: var(--text-accent);
+}
+
+.modal.mod-settings
+  button:not(.mod-cta):not(.mod-warning).omnivore-btn.omnivore-btn-primary:hover {
+	color: var(--text-accent-hover);
+	background-color: var(--background-secondary);
+}
+
+/*----------------------------------------------------------------
+Omnivore Highlight Color Config Setting
+----------------------------------------------------------------*/
+
+.omnivore-highlight-setting-item {
+	display: grid;
+	grid-gap: 8px;
+	grid-template-columns: 0.5fr 7fr;
+	align-items: center;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.omnivore-highlight-setting-icon {
+	display: flex;
+	height: 24px;
+	width: 24px;
+}
+
+mark.omni {
+	background-color: var(--text-highlight-rgb);
+	font-weight: 500;
+	margin: 0 -0.05em;
+	padding: 0.125em 0.15em;
+	border-radius: 0.25em;
+	-webkit-box-decoration-break: clone;
+	box-decoration-break: clone;
+}
+
+mark.omni-yellow {
+	--text-highlight-rgb: var(--omni-yellow);
+}
+mark.omni-red {
+	--text-highlight-rgb: var(--omni-red);
+}
+mark.omni-green {
+	--text-highlight-rgb: var(--omni-green);
+}
+mark.omni-blue {
+	--text-highlight-rgb: var(--omni-blue);
+}
+
+/*----------------------------------------------------------------
+VIP Status Display
+----------------------------------------------------------------*/
+
+.vip-status-container {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	margin: 15px 0;
+	padding: 12px 15px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+
+.vip-status-left {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.vip-status-info {
+	font-size: 0.95em;
+	color: var(--text-normal);
+	font-weight: 500;
+}
+
+.vip-status-qr-label {
+	font-size: 0.85em;
+	color: var(--text-muted);
+	font-weight: 500;
+}
+
+.vip-status-qr {
+	flex-shrink: 0;
+	margin-left: 15px;
+	display: flex;
+	align-items: center;
+}
+
+.vip-status-qr img {
+	display: block;
+	width: 72px;
+	height: 72px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+}
+
+/* 大号「刷新高级权益状态」引导按钮 */
+.vip-refresh-fresh {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	margin: 4px 0 18px;
+}
+
+.vip-refresh-fresh-btn.mod-cta {
+	width: 100%;
+	max-width: 420px;
+	padding: 12px 20px;
+	font-size: 1.05em;
+	font-weight: 600;
+	border-radius: 8px;
+	cursor: pointer;
+}
+
+.vip-refresh-fresh-btn.mod-cta:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.vip-refresh-fresh-hint {
+	font-size: 0.82em;
+	line-height: 1.4;
+	color: var(--text-muted);
+	text-align: center;
+	max-width: 460px;
+}
+
+.notehelper-help-links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 14px;
+	margin-top: 6px;
+}
+
+.notehelper-help-links a {
+	font-size: 13px;
+	color: var(--text-accent);
+	text-decoration: none;
+}
+
+.notehelper-help-links a:hover {
+	text-decoration: underline;
+}
+
+/* 调试模式排查提示：调试模式开关说明的第一行紫色引导字。--color-purple 是 Obsidian
+   内置主题变量，浅色/深色主题都有合适紫色。作为描述首行，留一点下边距与常规描述分隔。 */
+.notehelper-debug-hint {
+	color: var(--color-purple);
+	font-size: 13px;
+	margin-bottom: 4px;
+}
+
+/* 调试模式说明弹窗的要点列表 */
+.notehelper-debug-mode-points {
+	margin: 12px 0 0;
+	padding-left: 20px;
+	line-height: 1.7;
+}
+
+/* 合并文件模板的校验提示条：模板开头的 `---` 会被 Obsidian 当属性块起始，
+   写歪了落盘后会吞正文，这里实时提示（只提示、不阻断保存）。默认隐藏，
+   校验不过时加 .is-visible。 */
+.notehelper-merge-template-status {
+	display: none;
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+
+/* ⚠️ 背景别用 --background-modifier-error：那是「删除按钮」那种实心红，配
+   --text-error 是红字压红底，真机截图里整条只剩一块红（2026-08-06 实测）。
+   改成次级底色 + 红色左边框，浅色/深色主题下都读得清。 */
+.notehelper-merge-template-status.is-visible {
+	display: block;
+	margin: 0 0 12px 0;
+	padding: 8px 10px;
+	border-left: 3px solid var(--text-error);
+	border-radius: 4px;
+	color: var(--text-error);
+	background: var(--background-secondary);
+}
+
+/* 市场版弱升级提醒：附在同步状态 Notice 下方的一行可点击文字。
+   刻意做得低调（次级颜色、小字号），点击跳转 Obsidian 第三方插件页升级。 */
+.notehelper-update-reminder {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-accent);
+	font-size: 12px;
+	cursor: pointer;
+	text-decoration: underline;
+}
