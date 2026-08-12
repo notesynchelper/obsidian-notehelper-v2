@@ -1,7 +1,7 @@
 {
   "id": "notehelper-v2",
   "name": "Wechat Note Helper",
-  "version": "2.12.2",
+  "version": "3.2.5",
   "minAppVersion": "1.4.0",
   "description": "Capture content from WeChat Official Accounts, Xiaohongshu, Dedao, Yuanbao, and Zhihu. Save chat records, images, and files with ease.",
   "author": "NoteHelper Team",
