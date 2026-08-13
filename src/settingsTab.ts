@@ -7,14 +7,6 @@ import {
   requestUrl,
 } from 'obsidian'
 
-// Obsidian 1.13 声明式设置条目的最小结构。本仓库 obsidian typings 还在 1.12
-// （无 SettingDefinitionItem 类型），先本地声明「纯索引条目」形状 ——
-// 只含 name/desc、不含 control/action/render 的条目对 1.13 运行时合法
-// （对应官方 SettingDefinitionEmpty），仅用于设置搜索索引。
-interface SettingSearchEntry {
-  name: string
-  desc?: string
-}
 import OmnivorePlugin from './main'
 import { FolderSuggest } from './settings/file-suggest'
 import {
@@ -39,7 +31,7 @@ import { getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh 
 import { VIP_QR_DATA_URI } from './assets/vipQrImage'
 import { log, logError, Logger } from './logger'
 import { MARKET_VERSION_CHECK_URL } from './updateReminder'
-import { t, type TKey } from './i18n'
+import { t } from './i18n'
 import {
   clampImageDownloadRetries,
   MAX_IMAGE_DOWNLOAD_RETRIES,
@@ -82,65 +74,17 @@ export class OmnivoreSettingTab extends PluginSettingTab {
   }
 
   /**
-   * Obsidian 1.13+ 设置搜索索引（声明式设置 API 的最小采纳）。
-   * 只提供 name/desc 纯索引条目、不带 control：页面渲染仍由 display() 的
-   * 分区折叠版负责（搜索命中后打开本 tab，由用户就近定位）。1.13 之前的
-   * 版本不会调用本方法，多出的成员无副作用。
+   * ⚠️ 必须返回空数组（2026-08-13 线上回归教训）：Obsidian 1.13 的
+   * renderTab = () => settingItems.length > 0 ? 声明式渲染 : this.display()
+   * —— 返回任何非空条目（哪怕只有 name/desc 的“纯索引条目”）都会让 1.13
+   * 【彻底跳过 display()】，整页被渲染成纯文字、没有任何输入控件，用户连
+   * API key 都填不进去。本插件页面渲染完全依赖 display() 的分区折叠版；
+   * 在完成真正的声明式迁移（每条都带 render/control）之前，这里必须保持 []。
+   * 守护用例：obsidian-plug 主仓 tests/real-obsidian/
+   * run-market-settings-input-pull-screenshot.js（Obsidian 1.13.4 真机）。
    */
-  getSettingDefinitions(): SettingSearchEntry[] {
-    const entry = (nameKey: TKey, descKey?: TKey): SettingSearchEntry =>
-      descKey ? { name: t(nameKey), desc: t(descKey) } : { name: t(nameKey) }
-    return [
-      entry('settings.apiKey.name', 'settings.apiKey.desc'),
-      entry('settings.vip.heading'),
-      entry('settings.help.name', 'settings.help.desc'),
-      entry('settings.article.count.name', 'settings.article.count.desc'),
-      entry('settings.burnAfterReading.name', 'settings.burnAfterReading.desc'),
-      entry('settings.section.clearCloud.name', 'settings.section.clearCloud.desc'),
-      entry('settings.debugMode.name', 'settings.debugMode.desc'),
-      entry('settings.advanced.debugLog.name', 'settings.advanced.debugLog.desc'),
-      entry('settings.advanced.exportConfig.name', 'settings.advanced.exportConfig.desc'),
-      entry('settings.sync.syncOnStart.name', 'settings.sync.syncOnStart.desc'),
-      entry('settings.sync.frequency.name', 'settings.sync.frequency.desc'),
-      entry('settings.sync.lastSync.name', 'settings.sync.lastSync.desc'),
-      entry('settings.sync.articleFolder.name', 'settings.sync.articleFolder.desc'),
-      entry('settings.sync.articleFolderDateFormat.name', 'settings.sync.articleFolderDateFormat.desc'),
-      entry('settings.sync.attachmentFolder.name', 'settings.sync.attachmentFolder.desc'),
-      entry('settings.sync.articleFilename.name', 'settings.sync.articleFilename.desc'),
-      entry('settings.sync.articleFilenameDateFormat.name', 'settings.sync.articleFilenameDateFormat.desc'),
-      entry('settings.advanced.frontMatterTemplate.name'),
-      entry('settings.advanced.omitFrontmatterId.name', 'settings.advanced.omitFrontmatterId.desc'),
-      entry('settings.advanced.articleTemplate.name'),
-      entry('settings.sync.mergeMode.name'),
-      entry('settings.sync.messageSortOrder.name'),
-      entry('settings.sync.noMessageMarker.name', 'settings.sync.noMessageMarker.desc'),
-      entry('settings.sync.messageFolder.name', 'settings.sync.messageFolder.desc'),
-      entry('settings.sync.messageFileName.name'),
-      entry('settings.sync.messageFileDateFormat.name', 'settings.sync.messageFileDateFormat.desc'),
-      entry('settings.sync.mergeFileTemplate.name', 'settings.sync.mergeFileTemplate.desc'),
-      entry('settings.advanced.assistantTemplate.name', 'settings.advanced.assistantTemplate.desc'),
-      entry('settings.content.escapeHashtags.name', 'settings.content.escapeHashtags.desc'),
-      entry('settings.advanced.frontMatter.name'),
-      entry('settings.advanced.dateSavedFormat.name', 'settings.advanced.dateSavedFormat.desc'),
-      entry('settings.advanced.templateVars.name'),
-      entry('settings.image.mode.name'),
-      entry('settings.image.pngToJpeg.name', 'settings.image.pngToJpeg.desc'),
-      entry('settings.image.jpegQuality.name', 'settings.image.jpegQuality.desc'),
-      entry('settings.image.retries.name', 'settings.image.retries.desc'),
-      entry('settings.image.storageFolder.name', 'settings.image.storageFolder.desc'),
-      entry('settings.diary.enable.name', 'settings.diary.enable.desc'),
-      entry('settings.diary.autoCreate.name', 'settings.diary.autoCreate.desc'),
-      entry('settings.diary.folder.name', 'settings.diary.folder.desc'),
-      entry('settings.diary.dateFormat.name'),
-      entry('settings.diary.writePosition.name', 'settings.diary.writePosition.desc'),
-      entry('settings.diary.anchor.name'),
-      entry('settings.diary.linkOrder.name', 'settings.diary.linkOrder.desc'),
-      entry('settings.diary.linkType.name', 'settings.diary.linkType.desc'),
-      entry('settings.diary.linkPrefix.name', 'settings.diary.linkPrefix.desc'),
-      entry('settings.diary.linkMaxLength.name', 'settings.diary.linkMaxLength.desc'),
-      entry('settings.diary.noDiaryLinkId.name', 'settings.diary.noDiaryLinkId.desc'),
-      entry('settings.advanced.language.name', 'settings.advanced.language.desc'),
-    ]
+  getSettingDefinitions(): [] {
+    return []
   }
 
   // 市场版：二维码不走网络 —— 「购买高级权益」用打包进插件的静态 data URI
