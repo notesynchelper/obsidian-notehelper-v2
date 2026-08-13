@@ -18,7 +18,7 @@ Works on desktop and mobile.
 
 ### ⚠️ Disclosures (please read before installing)
 
-**Account & API key required.** The plugin is a client for the Note Sync Helper service. It does nothing until you enter an API key, which you obtain from the WeChat official account 「笔记同步助手」. Your API key is stored locally in the plugin's `data.json` and sent with every request to authenticate you.
+**Account & API key required.** The plugin is a client for the Note Sync Helper service. It does nothing until you enter an API key, which you obtain from the WeChat official account 「笔记同步助手」. Your API key is stored locally in the plugin's `data.json` and sent with every API request to authenticate you (image/attachment downloads from the CDN hosts below do **not** carry the key).
 
 **Network use.** This plugin talks to the following servers (all operated by the plugin author / the Note Sync Helper service, unless noted):
 
@@ -26,9 +26,13 @@ Works on desktop and mobile.
 |---|---|
 | `obsidian.notebooksyncer.com` | Main sync API (GraphQL): pull your notes, mark them synced, delete on request; membership/quota status; market version-number check (`/plugversion-market`) |
 | `relay-1.bijitongbu.site`, `graph.bijitongbu.site` | Fallback endpoints for the same API (network resilience in mainland China) |
-| `relay-1/2/3/4.bijitongbu.site`, `pic.clipfx.app` | Image / attachment CDN. When you enable image or attachment localization, files referenced by your synced notes are downloaded from here into your vault |
+| `relay-1/2/3/4.bijitongbu.site`, `pic.clipfx.app`, `media.clipfx.app`, `media30d.clipfx.app`, `sync.bijitongbu.site`, `www.bijitongbu.site` | Image / attachment hosting, including fallback origin servers. When you enable image or attachment localization, files referenced by your synced notes are downloaded from these hosts into your vault |
+
+Localization downloads the remote URLs your synced notes actually reference: the service normally rewrites media links to the hosts above, but if a note still references a file at its original source (e.g. the source platform's CDN), the plugin downloads it from that original host.
 
 Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiannao.bijitongbu.site`, `bijitongbu.feishu.cn`) open in your browser only when you click them.
+
+Legacy note: the bundle includes the `@omnivore-app/api` client library (this plugin began as an Omnivore fork). The library's built-in default endpoint (`api-prod.omnivore.app`) is never contacted — the plugin always supplies its own endpoint from the table above. The optional `omnivoreUrl` template variable writes legacy `omnivore.app` links into note text as plain text; no request is ever made to omnivore.app.
 
 **What is sent.** Requests carry your API key, sync cursors/timestamps, and — for explicit actions you trigger — article IDs (e.g. "burn after reading" deletion, clearing server-side storage). The plugin does **not** read, upload, or index the existing notes in your vault; content flows from the service *into* your vault.
 
@@ -73,7 +77,7 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 
 ### ⚠️ 使用披露（安装前请阅读）
 
-**需要账号与 API 密钥。** 本插件是「笔记同步助手」服务的客户端，填入 API 密钥前不做任何事。密钥通过微信服务号「笔记同步助手」获取，保存在插件本地 `data.json` 中，每次请求随请求发送用于身份认证。
+**需要账号与 API 密钥。** 本插件是「笔记同步助手」服务的客户端，填入 API 密钥前不做任何事。密钥通过微信服务号「笔记同步助手」获取，保存在插件本地 `data.json` 中，每次 API 请求随请求发送用于身份认证（从下表 CDN 域名下载图片/附件时**不**携带密钥）。
 
 **网络访问。** 插件会访问以下服务器（除特别说明外，均由插件作者 / 笔记同步助手服务运营）：
 
@@ -81,9 +85,13 @@ Documentation links in the settings page (`www.notebooksyncer.com`, `shoujidiann
 |---|---|
 | `obsidian.notebooksyncer.com` | 主同步 API（GraphQL）：拉取笔记、标记已同步、按请求删除；会员/配额状态；市场版本号检查（`/plugversion-market`） |
 | `relay-1.bijitongbu.site`、`graph.bijitongbu.site` | 同一 API 的备用端点（大陆网络容灾） |
-| `relay-1/2/3/4.bijitongbu.site`、`pic.clipfx.app` | 图片/附件 CDN。开启图片或附件本地化后，同步笔记中引用的文件从这里下载进仓库 |
+| `relay-1/2/3/4.bijitongbu.site`、`pic.clipfx.app`、`media.clipfx.app`、`media30d.clipfx.app`、`sync.bijitongbu.site`、`www.bijitongbu.site` | 图片/附件存储（含源站兜底节点）。开启图片或附件本地化后，同步笔记中引用的文件从这些域名下载进仓库 |
+
+本地化下载的是同步笔记中实际引用的远程 URL：服务端通常已把媒体链接改写到上述域名；若某条笔记仍引用原始来源（如源平台 CDN）的文件，插件会从该原始域名下载。
 
 设置页里的文档链接（`www.notebooksyncer.com`、`shoujidiannao.bijitongbu.site`、`bijitongbu.feishu.cn`）仅在你点击时用浏览器打开。
+
+遗留说明：安装包内含 `@omnivore-app/api` 客户端库（本插件源自 Omnivore fork）。该库内置的默认地址（`api-prod.omnivore.app`）永远不会被访问——插件始终传入上表中自己的端点；可选模板变量 `omnivoreUrl` 只会往笔记文本里写历史遗留的 `omnivore.app` 链接（纯文本），不会向 omnivore.app 发起任何请求。
 
 **发送哪些数据。** 请求携带你的 API 密钥、同步游标/时间戳，以及你显式触发的操作对应的文章 ID（如「阅后即焚」删除、清空云端内容）。插件**不会**读取、上传或索引你仓库中已有的笔记；内容只从服务端流向你的仓库。
 
