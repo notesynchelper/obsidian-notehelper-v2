@@ -127,6 +127,17 @@ mark.omni-blue {
 VIP Status Display
 ----------------------------------------------------------------*/
 
+/* is-hidden 显隐规则 —— settingsTab.ts 用 addClass('is-hidden') 控制这三类元素
+   （无密钥隐藏整个状态容器 / 网络异常隐藏二维码容器 / 会员态隐藏购买码）。
+   ⚠️ 3.2.7 及之前漏了这组规则，addClass 完全无效：无密钥时裸露「加载中…」+
+   无 src 的 broken 二维码图（2026-08-13 E2E 截图 + codex 交叉审抓出）。
+   规则必须带元素限定，styles.css 是全局注入，禁止写裸 .is-hidden 污染宿主。 */
+.vip-status-container.is-hidden,
+.vip-status-qr.is-hidden,
+.vip-status-qr img.is-hidden {
+	display: none;
+}
+
 .vip-status-container {
 	display: flex;
 	align-items: flex-start;

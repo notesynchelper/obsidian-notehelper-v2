@@ -2041,13 +2041,6 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     })
   }
 
-  displayBlock(block: HTMLElement, display: boolean): void {
-    if (display) {
-      block.removeClass('is-hidden')
-    } else {
-      block.addClass('is-hidden')
-    }
-  }
 
   private displayVersionInfo(containerEl: HTMLElement) {
     // 创建版本信息容器
