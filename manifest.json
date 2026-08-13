@@ -1,7 +1,7 @@
 {
 	"id": "wechat-note-helper",
 	"name": "Bi Ji Tong Bu",
-	"version": "3.2.7",
+	"version": "3.2.8",
 	"minAppVersion": "1.8.7",
 	"description": "Capture content from WeChat Official Accounts, Xiaohongshu, Dedao, Yuanbao, and Zhihu. Save chat records, images, and files with ease.",
 	"author": "NoteHelper Team",

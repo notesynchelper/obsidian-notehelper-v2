@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-notehelper-v2",
-	"version": "3.2.7",
+	"version": "3.2.8",
 	"description": "Bi Ji Tong Bu (笔记同步助手) — sync notes and articles from WeChat Official Accounts and more into Obsidian",
 	"main": "main.js",
 	"scripts": {
