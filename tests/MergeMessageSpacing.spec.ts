@@ -361,7 +361,7 @@ describe('合并消息块间距', () => {
   test.each([
     { order: 'ASC', sortOrder: MessageSortOrder.ASC },
     { order: 'DESC', sortOrder: MessageSortOrder.DESC },
-  ])('文件头与首条消息之间在 $order 下仍是双换行', async ({ sortOrder }) => {
+  ])('文件头与首条消息之间在 $order 下压成单换行', async ({ sortOrder }) => {
     const ctx = makeContext(
       {
         messageSortOrder: sortOrder,
@@ -376,9 +376,132 @@ describe('合并消息块间距', () => {
       },
     ])
 
-    expect(bodyOf(ctx.getFileContent())).toMatch(
-      /^# 文件头\n\n---\n#### 第一条/,
+    const body = bodyOf(ctx.getFileContent())
+    expect(body).toMatch(/^# 文件头\n- - -\n#### 第一条/)
+    const tokens = marked.lexer(body)
+    expect(
+      tokens.some(
+        (token) =>
+          token.type === 'heading' &&
+          token.depth === 1 &&
+          token.text?.includes('文件头'),
+      ),
+    ).toBe(true)
+    expect(tokens.some((token) => token.type === 'hr')).toBe(true)
+  })
+
+  test('纯文本文件头：压成单换行后不被 `---` 吞成 setext H2', async () => {
+    const ctx = makeContext(
+      {
+        messageSortOrder: MessageSortOrder.DESC,
+        mergeFileTemplate: '今天的消息',
+      },
+      '今天的消息\n',
     )
+    await process(ctx, [
+      {
+        item: makeMessage(ID1, '2026-08-12T09:00:00.000Z', '第一条'),
+        content: '',
+      },
+    ])
+
+    const body = bodyOf(ctx.getFileContent())
+    expect(body).toMatch(/^今天的消息\n- - -\n#### 第一条/)
+    const tokens = marked.lexer(body)
+    expect(
+      tokens.some(
+        (token) => token.type === 'heading' && token.text?.includes('今天的消息'),
+      ),
+    ).toBe(false)
+    expect(
+      tokens.some(
+        (token) => token.type === 'paragraph' && token.text?.includes('今天的消息'),
+      ),
+    ).toBe(true)
+    expect(tokens.some((token) => token.type === 'hr')).toBe(true)
+  })
+
+  test('文件头以未闭合的 HTML block 结尾 → 退回双换行，消息不被吞成 raw HTML', async () => {
+    const ctx = makeContext(
+      {
+        messageSortOrder: MessageSortOrder.DESC,
+        mergeFileTemplate: '<div class="cover">封面',
+      },
+      '<div class="cover">封面\n',
+    )
+    await process(ctx, [
+      {
+        item: makeMessage(ID1, '2026-08-12T09:00:00.000Z', '第一条'),
+        content: '',
+      },
+    ])
+
+    const body = bodyOf(ctx.getFileContent())
+    expect(body).toMatch(/^<div class="cover">封面\n\n- - -\n#### 第一条/)
+    expect(
+      marked
+        .lexer(body)
+        .some(
+          (token) =>
+            token.type === 'heading' &&
+            token.depth === 4 &&
+            token.text?.includes('第一条'),
+        ),
+    ).toBe(true)
+  })
+
+  test('文件头以「链接引用定义 + type-7 标签」结尾 → 退回双换行，消息不被吞进 raw HTML', async () => {
+    // 链接引用定义不是 paragraph，所以它后面的 <svg> 是能开 HTML block 的 ——
+    // 漏判就会把分隔线 + 整条消息都留在 raw HTML 里（marked 实测：单换行时零 heading）。
+    const header = '[logo]: /x\n<svg>'
+    const ctx = makeContext(
+      { messageSortOrder: MessageSortOrder.DESC, mergeFileTemplate: header },
+      `${header}\n`,
+    )
+    await process(ctx, [
+      {
+        item: makeMessage(ID1, '2026-08-12T09:00:00.000Z', '第一条'),
+        content: '',
+      },
+    ])
+
+    const body = bodyOf(ctx.getFileContent())
+    expect(body).toMatch(/^\[logo\]: \/x\n<svg>\n\n- - -\n#### 第一条/)
+    const tokens = marked.lexer(body)
+    expect(tokens.some((token) => token.type === 'hr')).toBe(true)
+    expect(
+      tokens.some(
+        (token) =>
+          token.type === 'heading' &&
+          token.depth === 4 &&
+          token.text?.includes('第一条'),
+      ),
+    ).toBe(true)
+  })
+
+  test('跨轮：文件头压缩后仍认得出，第二轮新消息插在文件头之下、老消息之上', async () => {
+    const ctx = makeContext(
+      {
+        messageSortOrder: MessageSortOrder.DESC,
+        mergeFileTemplate: '# 文件头',
+      },
+      '# 文件头\n',
+    )
+    await processTwoMessages(ctx, 'cross-batch')
+
+    const body = bodyOf(ctx.getFileContent())
+    expect(body).toMatch(/^# 文件头\n- - -\n#### 第二条正文/)
+    expect(body.indexOf('第二条正文')).toBeLessThan(body.indexOf('第一条正文'))
+    expect(
+      marked
+        .lexer(body)
+        .some(
+          (token) =>
+            token.type === 'heading' &&
+            token.depth === 1 &&
+            token.text?.includes('文件头'),
+        ),
+    ).toBe(true)
   })
 
   test('文章跨批次合并仍使用双换行', async () => {

@@ -332,11 +332,15 @@ function hasOpenBlankLineTerminatedHtmlBlock(block: string): boolean {
     }
 
     // 这些单行块结束后，下一行仍处于 block 起点；其余内容按 paragraph 保守处理。
+    // 链接引用定义（`[logo]: /x`）不是 paragraph —— 漏判会让紧跟其后的 type-7 标签
+    // （`<svg>` 等）走不到上面那个 `!paragraphOpen` 分支，于是分隔线和整条消息被吞进
+    // raw HTML（codex P2）。它**不能打断** paragraph，所以只在块起点上认。
     if (
       /^ {0,3}#{1,6}(?:[ \t]+|$)/.test(line) ||
       /^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(
         line,
       ) ||
+      (!paragraphOpen && /^ {0,3}\[[^\]]*\]:/.test(line)) ||
       (paragraphOpen && /^ {0,3}(?:=+[ \t]*|-+[ \t]*)$/.test(line))
     ) {
       paragraphOpen = false
@@ -414,17 +418,31 @@ export function insertIntoMergeBody(
       : `${left}\n\n${right}`
   }
 
+  /**
+   * 文件头 ↔ 首条内容：同样走 joinContent（安全时单换行），但**压缩后必须仍能把
+   * 文件头原样切出来**，否则退回历史双换行。
+   *
+   * 为什么要自检：定位器里被 Templater 空白控制放宽的空白段是**有界**通配
+   * （`[\s]{0,n}`，见 buildMergeHeaderMatcher）。双换行时它跨不过分隔；换成单换行后
+   * 有可能跨过去，把消息第一行算进文件头 —— 下一轮新消息就被插进老消息中间（数据
+   * 损坏）。宁可多一个空行，也绝不让文件头边界漂移。
+   */
+  const joinAfterHeader = (header: string, rest: string): string => {
+    const joined = joinContent(header, rest)
+    if (splitMergeHeader(joined, headerRe).header === header) return joined
+    return `${header}\n\n${rest}`
+  }
+
   if (sortOrder === MessageSortOrder.ASC) {
-    // 文件头与首条内容不是「消息 ↔ 消息」边界，保持原来的双换行字节。
     const { header, rest } = splitMergeHeader(body, headerRe)
-    if (header && !rest.trim()) return `${header}\n\n${block}`
+    if (header && !rest.trim()) return joinAfterHeader(header, block)
     return body.trim() ? joinContent(body, block) : block
   }
   const { header, rest } = splitMergeHeader(body, headerRe)
   if (!header) return rest.trim() ? joinContent(block, rest) : block
   return rest.trim()
-    ? `${header}\n\n${joinContent(block, rest)}`
-    : `${header}\n\n${block}`
+    ? joinAfterHeader(header, joinContent(block, rest))
+    : joinAfterHeader(header, block)
 }
 
 // ---------------------------------------------------------------------------

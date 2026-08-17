@@ -145,6 +145,8 @@ describe('文件头定位（不写锚点，靠模板反推正则）', () => {
   const headerRe = buildMergeHeaderMatcher(TEMPLATE)
   // 文件正文（frontmatter 已被 MergeProcessor 单独摘出去）
   const headerBody = '# 📮 2026-08-06 的消息'
+  /** 消息路径的连接策略（文章路径不传，保持历史双换行）。 */
+  const COMPACT = { compactWechatMessageSpacing: true }
 
   test('模板里的属性块不参与匹配（它在 frontmatter 里，不在正文）', () => {
     expect(headerRe).not.toBeNull()
@@ -190,6 +192,81 @@ describe('文件头定位（不写锚点，靠模板反推正则）', () => {
   test('insert ASC：追加到末尾，与历史行为逐字一致', () => {
     expect(insertIntoMergeBody('旧内容', '新块', MessageSortOrder.ASC, headerRe)).toBe('旧内容\n\n新块')
     expect(insertIntoMergeBody('', '新块', MessageSortOrder.ASC, headerRe)).toBe('新块')
+  })
+
+  test.each([
+    { order: 'DESC', sortOrder: MessageSortOrder.DESC },
+    { order: 'ASC', sortOrder: MessageSortOrder.ASC },
+  ])('$order：右侧能打断段落时压成单换行，`---` 幂等改写成 `- - -`', ({ sortOrder }) => {
+    const out = insertIntoMergeBody(
+      `${headerBody}\n`,
+      '---\n#### 第一条\n正文',
+      sortOrder,
+      headerRe,
+      COMPACT,
+    )
+    expect(out).toBe(`${headerBody}\n- - -\n#### 第一条\n正文`)
+    // 下一轮仍认得出同一个文件头（定位器没被压缩带偏）
+    expect(splitMergeHeader(out, headerRe).header).toBe(headerBody)
+  })
+
+  test('DESC：文件头之下已有老消息时，只压文件头这条边界，老消息一字不动', () => {
+    const out = insertIntoMergeBody(
+      `${headerBody}\n- - -\n#### 老消息`,
+      '---\n#### 新消息',
+      MessageSortOrder.DESC,
+      headerRe,
+      COMPACT,
+    )
+    expect(out).toBe(`${headerBody}\n- - -\n#### 新消息\n- - -\n#### 老消息`)
+  })
+
+  test('文件头以未闭合的 type-6 HTML block 结尾 → 退回双换行（否则整段被吞成 raw HTML）', () => {
+    const re = buildMergeHeaderMatcher('# 头\n<div class="x">{{{date}}}')!
+    const htmlHead = '# 头\n<div class="x">2026-08-06'
+    const out = insertIntoMergeBody(
+      `${htmlHead}\n`,
+      '---\n#### 第一条',
+      MessageSortOrder.DESC,
+      re,
+      COMPACT,
+    )
+    expect(out).toBe(`${htmlHead}\n\n- - -\n#### 第一条`)
+  })
+
+  test('消息块首行不是块级构造（纯文本模板）→ 退回双换行，不糊成同一段落', () => {
+    const out = insertIntoMergeBody(
+      `${headerBody}\n`,
+      '📅 2026-08-06 10:00:00\n正文',
+      MessageSortOrder.DESC,
+      headerRe,
+      COMPACT,
+    )
+    expect(out).toBe(`${headerBody}\n\n📅 2026-08-06 10:00:00\n正文`)
+  })
+
+  test('🔴 压缩会让定位器吃进消息第一行时 → 自检失败，退回双换行', () => {
+    // 现实里这类定位器来自 Templater 空白控制的「有界放宽」：双换行跨不过去、
+    // 单换行可能跨过去。这里直接给一个会多吃一行的正则把不变式钉死。
+    const greedy = /^# 头(?:\n- - -)?/
+    const out = insertIntoMergeBody(
+      '# 头\n',
+      '---\n#### 第一条',
+      MessageSortOrder.DESC,
+      greedy,
+      COMPACT,
+    )
+    expect(out).toBe('# 头\n\n---\n#### 第一条')
+    expect(splitMergeHeader(out, greedy).header).toBe('# 头')
+  })
+
+  test('不传 compact 选项（文章路径）→ 文件头边界仍是历史双换行', () => {
+    expect(
+      insertIntoMergeBody(`${headerBody}\n`, '文章正文', MessageSortOrder.DESC, headerRe),
+    ).toBe(`${headerBody}\n\n文章正文`)
+    expect(
+      insertIntoMergeBody(`${headerBody}\n`, '文章正文', MessageSortOrder.ASC, headerRe),
+    ).toBe(`${headerBody}\n\n文章正文`)
   })
 
   test('mergeBodyHasContent / isHeaderOnlyBody：只看文件头之外', () => {
