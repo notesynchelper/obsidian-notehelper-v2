@@ -403,12 +403,133 @@ function mapValueFunc() {
   }
 }
 
+/**
+ * 把 extract 的模板原文按「未转义的 `|`」切成参数。
+ *
+ * - 模板里写 `\|` → 规则里得到一个 `|`（正则的「或」），不当参数分隔符
+ * - 模板里写 `\\|` → 前一个 `\` 不构成转义、原样留下，规则里得到 `\|`
+ *   （即「匹配一个字面竖线字符」）
+ *
+ * 手写扫描而不是 `split(/(?<!\\)\|/)`：后行断言在 iOS < 16.4 的 WebView 里
+ * 直接抛 SyntaxError（整个 bundle 加载失败），移动端不能用。
+ */
+/** extract 允许参与匹配的取值长度上限（防用户规则灾难性回溯把同步挂死） */
+const EXTRACT_MAX_VALUE_LEN = 10000
+
+const splitExtractArgs = (text: string): string[] => {
+  const parts: string[] = []
+  let buf = ''
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '\\' && text[i + 1] === '|') {
+      buf += '|'
+      i++
+      continue
+    }
+    if (ch === '|') {
+      parts.push(buf)
+      buf = ''
+      continue
+    }
+    buf += ch
+  }
+  parts.push(buf)
+  return parts
+}
+
+/** 把 `$1`/`$&`/`$$` 展开成命中结果里的对应片段（只支持 $1..$9） */
+const expandExtractOutput = (
+  output: string,
+  matched: RegExpMatchArray,
+): string =>
+  output.replace(/\$(\$|&|\d)/g, (_whole, token: string) => {
+    if (token === '$') return '$'
+    if (token === '&') return matched[0]
+    const group = matched[Number(token)]
+    return group === undefined ? '' : group
+  })
+
+/**
+ * extract —— 从取值里抠出想要的片段（Mustache 没有 substring/regex 能力）。
+ *
+ *   {{#extract}}<取值表达式>|<匹配规则>|<输出格式>{{/extract}}
+ *
+ * - 取值表达式先经 Mustache 渲染（可写 {{{title}}}），渲染后裁掉首尾空白。
+ * - 匹配规则按字面量使用（不再过 Mustache），语法同 JS 正则，不含 flag。
+ * - 输出格式可省略，默认 `$1`（第 1 个括号分组；规则里没有分组时取整段命中）；
+ *   支持 `$1`..`$9`、`$&`（整段命中）、`$$`（字面 $）。
+ *
+ * 【安全兜底】以下情形一律**原样返回取值**——文件名模板走的就是这条路，抠空了
+ * 会让整篇笔记落到「未命名」上，比不抠更糟。所以「取值非空 → 结果必非空」是本
+ * 函数的硬约束（取值本身就是空时返回空，那是没得兜）：
+ *   - 规则没命中（例如普通文章标题不带企微消息那套前后缀）
+ *   - 规则本身写错（new RegExp 抛错）
+ *   - 只给了取值、没给规则
+ *   - 命中了但抠出来是空白（如规则写成 `^` / `a*` 这种能匹配空串的）
+ *   - 取值超过 {@link EXTRACT_MAX_VALUE_LEN}（见下）
+ *
+ * 【长度闸】用户自己写的规则可能有灾难性回溯（如 `^(a+)+$`），而正则一旦跑飞
+ * try/catch 接不住、同步整条线程卡死。取值来源可以是 {{{content}}} 这种几十万字的
+ * 正文，所以超过 EXTRACT_MAX_VALUE_LEN 直接跳过匹配、原样返回并记一条错误日志：
+ * 宁可不抠，也不能把同步挂死。
+ *
+ * 典型用法（企微消息标题「同步助手_20260824_随手记_文本」只留「随手记」）：
+ *   {{#extract}}{{{title}}}|^同步助手_\d{8}_([\s\S]+)_[^_]+$|$1{{/extract}}
+ */
+function extractFunc() {
+  return function (text: string, render: (text: string) => string) {
+    const parts = splitExtractArgs(text)
+    const value = render(parts[0] || '').trim()
+    if (parts.length < 2) {
+      return value
+    }
+    const pattern = parts[1].trim()
+    if (!pattern) {
+      return value
+    }
+    if (value.length > EXTRACT_MAX_VALUE_LEN) {
+      logError(
+        `extract 取值过长（${value.length} 字符，上限 ${EXTRACT_MAX_VALUE_LEN}），` +
+          '为避免匹配规则跑飞卡死同步，本次按原值输出',
+      )
+      return value
+    }
+    // 第 3 段之后的 `|` 是用户自己写在输出格式里的，原样拼回去
+    const hasOutput = parts.length > 2
+    const output = hasOutput ? parts.slice(2).join('|') : '$1'
+
+    let re: RegExp
+    try {
+      re = new RegExp(pattern)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      logError(`extract 匹配规则无法使用（已按原值输出）：${pattern} —— ${msg}`)
+      return value
+    }
+
+    const matched = value.match(re)
+    if (!matched) {
+      return value
+    }
+    // 没写输出格式且规则里没有分组 → 默认的 $1 无意义，回落整段命中
+    const expanded = (
+      !hasOutput && matched.length < 2
+        ? matched[0]
+        : expandExtractOutput(output, matched)
+    ).trim()
+    // 整段命中也要过这道非空兜底：`^` / `a*` 这类规则能匹配空串，
+    // 直接返回会让文件名变空 → 笔记落到「未命名」。
+    return expanded || value
+  }
+}
+
 const functionMap: FunctionMap = {
   lowerCase,
   upperCase,
   upperCaseFirst,
   formatDate: formatDateFunc,
   mapValue: mapValueFunc,
+  extract: extractFunc,
 }
 
 /**

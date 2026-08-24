@@ -849,7 +849,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           })
       })
 
-    new Setting(articleBody)
+    const articleFilenameSetting = new Setting(articleBody)
       .setName(t('settings.sync.articleFilename.name'))
       .setDesc(
         createFragment((fragment) => {
@@ -873,6 +873,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings(true)
           }),
       )
+    // 稳定选择器：real-obsidian e2e 用它定位/截图「文章文件名」这一行
+    articleFilenameSetting.settingEl.addClass('notehelper-article-filename-row')
 
     new Setting(articleBody)
       .setName(t('settings.sync.articleFilenameDateFormat.name'))
