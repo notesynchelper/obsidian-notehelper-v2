@@ -5,7 +5,7 @@
 
 import { requestUrl } from 'obsidian'
 import { log, logError } from '../logger'
-import { DownloadResult } from './types'
+import { DownloadFailureKind, DownloadResult } from './types'
 import { getFallbackUrls, isOriginHost } from '../common/imageRelay'
 
 export { getFallbackUrls }
@@ -382,6 +382,8 @@ async function attemptDownloadOnce(
  * 2. 每次瞬态失败后立即轮到下一线路，不在坏主节点上烧完整个预算。
  * 3. relay 的 404/410 要跨节点验证；权威源站的 404/410 直接结束。
  * 4. 单请求超时、退避封顶、单图总墙钟预算共同保证队列可收敛。
+ * 5. 失败结果带 failureKind：`not-found` 仅在「权威源站 404/410」或「所有线路都
+ *    404/410」时给出，其余一律 `transient`（上层据此决定是永久重试还是走有界预算）。
  *
  * @param url 图片URL
  * @param maxRetries 主线路最大重试次数
@@ -404,11 +406,19 @@ export async function downloadImage(
   let transientAttempt = 0
   let sawNotFound = false
   let lastResult: DownloadResult = { success: false, error: '下载失败' }
+  // 最后一次失败的分类。只有在「权威源站 404」或「所有线路都 404」时才会以
+  // not-found 收尾；任何一条线路给出瞬态失败并成为最后结论时都保持 transient，
+  // 宁可多重试也不误判死刑。
+  let lastFailureKind: DownloadFailureKind = 'transient'
 
   while (attempts < normalAttempts || (sawNotFound && unavailable.size < routes.length)) {
     const remainingMs = deadline - Date.now()
     if (remainingMs <= 0) {
-      return { success: false, error: `图片下载超过总时间预算（${IMAGE_DOWNLOAD_TIME_BUDGET_MS}ms）` }
+      return {
+        success: false,
+        error: `图片下载超过总时间预算（${IMAGE_DOWNLOAD_TIME_BUDGET_MS}ms）`,
+        failureKind: 'transient',
+      }
     }
 
     let route: string | undefined
@@ -432,12 +442,13 @@ export async function downloadImage(
     )
     lastResult = outcome.result
     if (outcome.kind === 'success') return outcome.result
+    lastFailureKind = outcome.kind
 
     if (outcome.kind === 'not-found') {
       sawNotFound = true
       unavailable.add(route)
       if (isOriginUrl(route) || unavailable.size === routes.length) {
-        return outcome.result
+        return { ...outcome.result, failureKind: 'not-found' }
       }
       // 永久失败不做退避，立即去其它节点交叉验证。
       continue
@@ -457,7 +468,7 @@ export async function downloadImage(
     }
   }
 
-  return lastResult
+  return { ...lastResult, failureKind: lastFailureKind }
 }
 
 /**

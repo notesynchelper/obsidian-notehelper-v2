@@ -25,6 +25,12 @@ export interface PendingTaskRecord {
   meta?: LocalizerItemMeta
   /** 跨重启保留的重试次数累加（诊断用，不再作丢弃闸门） */
   retryCount: number
+  /**
+   * 连续「本轮只剩服务端确认不存在的死图（404/410），且无任何瞬态失败」的轮次数。
+   * 跨重启保留，达到 NOT_FOUND_ROUND_BUDGET 后该任务退休（记录被移除）。
+   * 任一轮出现瞬态失败即清零 —— 瞬态失败永远不消耗这个预算。缺省视作 0。
+   */
+  notFoundRounds?: number
   /** 任务首次创建时间（毫秒时间戳） */
   createdAt: number
   /**
@@ -135,6 +141,11 @@ export class PendingLocalizeStore {
       ...record,
       filePath: newPath,
       retryCount: Math.max(target?.retryCount ?? 0, record.retryCount),
+      // 取大：改名/移动不该给死图预算「洗白」重来
+      notFoundRounds: Math.max(
+        target?.notFoundRounds ?? 0,
+        record.notFoundRounds ?? 0,
+      ),
       createdAt: Math.min(target?.createdAt ?? record.createdAt, record.createdAt),
       lastAttemptAt: Math.max(target?.lastAttemptAt ?? 0, record.lastAttemptAt ?? 0) || undefined,
     })
@@ -207,6 +218,12 @@ function sanitizeRecord(item: unknown): PendingTaskRecord | null {
     typeof obj.createdAt === 'number' && Number.isFinite(obj.createdAt)
       ? obj.createdAt
       : Date.now()
+  const notFoundRounds =
+    typeof obj.notFoundRounds === 'number' &&
+    Number.isFinite(obj.notFoundRounds) &&
+    obj.notFoundRounds >= 0
+      ? Math.floor(obj.notFoundRounds)
+      : 0
   const lastAttemptAt =
     typeof obj.lastAttemptAt === 'number' && Number.isFinite(obj.lastAttemptAt)
       ? obj.lastAttemptAt
@@ -215,5 +232,12 @@ function sanitizeRecord(item: unknown): PendingTaskRecord | null {
     obj.meta && typeof obj.meta === 'object' && !Array.isArray(obj.meta)
       ? (obj.meta as LocalizerItemMeta)
       : undefined
-  return { filePath: obj.filePath, meta, retryCount, createdAt, lastAttemptAt }
+  return {
+    filePath: obj.filePath,
+    meta,
+    retryCount,
+    notFoundRounds,
+    createdAt,
+    lastAttemptAt,
+  }
 }

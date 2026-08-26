@@ -6,6 +6,8 @@
 import { App, TFile, Vault, normalizePath } from 'obsidian'
 import { log, logError } from '../logger'
 import {
+  emptyFileLocalizeOutcome,
+  FileLocalizeOutcome,
   ImageEnqueueResult,
   ImageInfo,
   ImageProcessOptions,
@@ -43,6 +45,32 @@ const LINK_PATTERN = /(?<!!)\[([^\]]*)\]\(([^)\n]+)\)/g
 /** 同篇图片有界并发；足以避免单张黑洞阻断同篇健康图片，又不压垮移动端。 */
 const IMAGE_LOCALIZE_CONCURRENCY = 3
 
+/**
+ * 「永久死链」的有界预算（单位：本地化轮次，不是单次请求内的重试次数）。
+ *
+ * 背景（2026-08-26 事故）：doc-bridge 的 R2 桶上有一条 48h 生命周期规则，把本该
+ * 永久存在的 `img/<job>/<idx>` 一起删了，用户笔记里 591 个图片链接全部 404。下载层
+ * 其实早就把它分类成 not-found，但这个分类在 processImage 里退化成 null，上层无从
+ * 区分「永久死」与「图床暂时没好」，于是 drainQueue 那条「绝不丢弃」的规则把死图也
+ * 永久重试 —— 每次同步都要把 591 张死图重打一遍，整体同步被一直拖住。
+ *
+ * 现在：只有【本轮全部失败都是服务端确认的 404/410】时才消耗这个预算，连续
+ * NOT_FOUND_ROUND_BUDGET 轮如此就退休该任务（清续传记录、正文保留原始远程链接）。
+ * 任一轮出现瞬态失败即清零 —— 瞬态永久重试的铁律（Defect B）一字未动。
+ *
+ * 取 6 与下载层的 MAX_IMAGE_DOWNLOAD_RETRIES=5（首次 + 5 次重试）同构。轮次之间
+ * 受同步侧 60s 冷却约束，所以退休至少要跨 5 分钟、多轮独立验证才会发生；
+ * 「图床短暂 404、随后就绪」的图仍来得及被救回。用户右键「重新本地化」/ 笔记被
+ * 重新同步覆盖都会重新入队并重置预算。
+ */
+export const NOT_FOUND_ROUND_BUDGET = 6
+
+/** processImage 的可判别结果：把下载层的 not-found 分类完整带给上层。 */
+type ProcessImageOutcome =
+  | { status: 'ok'; localPath: string }
+  | { status: 'not-found' }
+  | { status: 'failed' }
+
 interface SessionImageEntry {
   folderPath: string
   localPath: string
@@ -65,6 +93,11 @@ export class ImageLocalizer {
   // 网络仍保持 3 路并发；只把会占用 WebView 主线程和大块像素内存的 Canvas 转换
   // 串行化，避免三张 PNG 同时 decode/draw/toBlob。
   private pngConversionTail: Promise<void> = Promise.resolve()
+  // 本轮 drain 内已被服务端确认不存在（404/410）的 URL。同一张死图在同一轮里
+  // 只验证一次（一篇笔记里重复出现、或多篇笔记引用同一张死图时省掉重复请求）。
+  // 每轮 drain 开始时清空 —— 绝不跨轮沿用，否则「图床暂时 404、稍后就绪」的图
+  // 会在预算耗尽前再也得不到一次真实验证。
+  private roundNotFoundUrls = new Set<string>()
 
   constructor(
     app: App,
@@ -384,6 +417,9 @@ export class ImageLocalizer {
    *   processQueue 据此决定：全部完成 → 清除续传记录；否则 → 【保留】续传记录，
    *   交给后续同步 / 重启重试（图床未就绪属瞬态，绝不能丢任务）。
    *
+   * @param outcome 可选出参（sink）：回填本轮未完成的原因分类，供 drainQueue 区分
+   *   「只剩服务端确认不存在的死图」与「存在瞬态失败」。不传时行为与历史一致。
+   *
    *   历史语义变更（2026-07）：旧实现「单张图下载失败不影响结果、恒返回 true」会
    *   把「图床未就绪导致下载失败」误判为成功 → 清除续传记录 → 永不重试，且配合
    *   下载层缺校验时还会把占位/错误页当图片存下并替换链接。现改为如实反映
@@ -392,6 +428,7 @@ export class ImageLocalizer {
   async localizeFile(
     fileOrTask: TFile | LocalizeTask,
     onImageDone?: () => void,
+    outcome?: FileLocalizeOutcome,
   ): Promise<boolean> {
     const task: LocalizeTask | { file: TFile; meta?: LocalizerItemMeta } =
       fileOrTask instanceof TFile ? { file: fileOrTask } : fileOrTask
@@ -407,6 +444,7 @@ export class ImageLocalizer {
         content = await this.vault.read(file)
       } catch (error) {
         logError(`读取笔记失败，保留续传记录待重试: ${file.path}`, error)
+        if (outcome) outcome.hasTransient = true
         return false
       }
       const images = this.scanRemoteImages(content, file.path)
@@ -432,15 +470,28 @@ export class ImageLocalizer {
           const previous = urlChains.get(image.originalUrl) ?? Promise.resolve()
           const current = previous.then(async () => {
             try {
-              const localPath = await this.processImage(image, file, meta)
-              if (localPath) {
-                this.urlLocalMap.set(file.path, image.originalUrl, localPath)
-                urlToLocal.set(image.originalUrl, localPath)
+              const processed = await this.processImage(image, file, meta)
+              if (processed.status === 'ok') {
+                this.urlLocalMap.set(file.path, image.originalUrl, processed.localPath)
+                urlToLocal.set(image.originalUrl, processed.localPath)
               } else {
+                // 两种失败都保留原始远程链接（数据永不丢），区别只在重试策略：
+                // not-found 走有界预算，transient 永久重试。
                 allResolved = false
+                if (outcome) {
+                  if (processed.status === 'not-found') {
+                    outcome.hasNotFound = true
+                    if (!outcome.notFoundUrls.includes(image.originalUrl)) {
+                      outcome.notFoundUrls.push(image.originalUrl)
+                    }
+                  } else {
+                    outcome.hasTransient = true
+                  }
+                }
               }
             } catch (error) {
               allResolved = false
+              if (outcome) outcome.hasTransient = true
               logError(`处理图片失败: ${image.originalUrl}`, error)
             } finally {
               onImageDone?.()
@@ -478,6 +529,7 @@ export class ImageLocalizer {
           // 已成功下载却没改写进正文（位置匹配异常等）→ 本文件未完成，保留续传记录
           // 待重试，绝不能算成功后清掉记录（codex 应修#5）。
           allResolved = false
+          if (outcome) outcome.hasTransient = true
           log(`⚠️ 写入验证失败! 已下载但未改写的链接残留: ${file.path}`)
           for (const url of unreplaced) log(`  未替换: ${url}`)
         } else {
@@ -487,6 +539,7 @@ export class ImageLocalizer {
       return allResolved
     } catch (error) {
       logError(`本地化文件失败: ${file.path}`, error)
+      if (outcome) outcome.hasTransient = true
       return false
     }
   }
@@ -495,13 +548,16 @@ export class ImageLocalizer {
    * 处理单张图片（下载、转换、保存）
    * @param image 图片信息
    * @param file 所属文件
-   * @returns 本地文件路径，失败返回 null
+   * @returns 可判别结果：`ok` 带本地路径；`not-found` = 服务端确认该图不存在
+   *   （404/410，已跨可用线路交叉验证）；`failed` = 其余一切失败（按瞬态处理）。
+   *   ⚠️ 别再退化成 `string | null` —— 丢掉 not-found 分类正是死图永久重试、
+   *   拖住整体同步的根因（2026-08-26 doc-bridge R2 生命周期事故）。
    */
   private async processImage(
     image: ImageInfo,
     file: TFile,
     meta?: LocalizerItemMeta,
-  ): Promise<string | null> {
+  ): Promise<ProcessImageOutcome> {
     try {
       const url = image.originalUrl
 
@@ -512,7 +568,7 @@ export class ImageLocalizer {
       const mapped = this.urlLocalMap.get(file.path, url)
       if (mapped && this.vault.getAbstractFileByPath(mapped) instanceof TFile) {
         log(`使用已记录的本地图片（断点续传）: ${url} -> ${mapped}`)
-        return mapped
+        return { status: 'ok', localPath: mapped }
       }
 
       // 目录必须用当前笔记的完整模板上下文计算；仅当缓存记录来自相同目录，
@@ -524,9 +580,15 @@ export class ImageLocalizer {
           this.vault.getAbstractFileByPath(sessionEntry.localPath) instanceof TFile
         ) {
           log(`复用会话内已下载图片: ${url} -> ${sessionEntry.localPath}`)
-          return sessionEntry.localPath
+          return { status: 'ok', localPath: sessionEntry.localPath }
         }
         this.sessionImageCache.delete(url)
+      }
+
+      // 本轮已确认不存在的 URL 不再重复请求（同一轮内验证一次就够）。
+      if (this.roundNotFoundUrls.has(url)) {
+        log(`本轮已确认该图在服务端不存在，跳过重复请求: ${url}`)
+        return { status: 'not-found' }
       }
 
       // 下载图片
@@ -537,8 +599,15 @@ export class ImageLocalizer {
       )
 
       if (!downloadResult.success || !downloadResult.data) {
+        if (downloadResult.failureKind === 'not-found') {
+          // 服务端明确说这张图不存在，且已跨可用线路交叉验证过 —— 记进本轮
+          // 名单，交由 drainQueue 的有界预算收敛，不再当瞬态无限重试。
+          this.roundNotFoundUrls.add(url)
+          logError(`图片在服务端已不存在（404/410），保留远程链接: ${url}`)
+          return { status: 'not-found' }
+        }
         logError(`下载失败: ${url}`)
-        return null
+        return { status: 'failed' }
       }
 
       let imageData = downloadResult.data
@@ -583,10 +652,11 @@ export class ImageLocalizer {
 
       // 只有保存成功后才写缓存；失败路径不会留下指向半成品/不存在文件的记录。
       this.sessionImageCache.set(url, { folderPath, localPath })
-      return localPath
+      return { status: 'ok', localPath }
     } catch (error) {
+      // 保存/转换等本地失败一律按瞬态处理（磁盘满、目录被占用等都可恢复）。
       logError(`处理图片失败: ${image.originalUrl}`, error)
-      return null
+      return { status: 'failed' }
     }
   }
 
@@ -684,12 +754,15 @@ export class ImageLocalizer {
     file: TFile,
     metaOrSavedAt?: LocalizerItemMeta | string,
   ): Promise<ImageEnqueueResult> {
-    return this.enqueueFileInternal(file, normalizeMetaArg(metaOrSavedAt), 0)
+    // 显式入队（同步写完 / 用户右键重新本地化）一律给全新预算：退休过的死图
+    // 也应该被再验证一次，源站补回来了就能自愈。
+    return this.enqueueFileInternal(file, normalizeMetaArg(metaOrSavedAt), 0, 0)
   }
 
   /**
-   * enqueueFile 主体 + 续传专用的 initialRetryCount 参数（resumePending 用，
-   * 跨重启保留重试预算，避免永久失败的图无限重启重试）。
+   * enqueueFile 主体 + 续传专用的 initialRetryCount / initialNotFoundRounds 参数
+   * （resumePending 与同步侧重挂用，跨重启保留重试预算与死图预算，避免永久失败的
+   * 图无限重启重试）。
    *
    * pendingStore 写路径与内存队列对称（见设计文档 §3.3）：
    * - 成功入队 / 重复入队刷新 meta → upsert
@@ -703,6 +776,7 @@ export class ImageLocalizer {
     file: TFile,
     meta: LocalizerItemMeta | undefined,
     initialRetryCount: number,
+    initialNotFoundRounds: number,
   ): Promise<ImageEnqueueResult> {
     const filePath = file.path
 
@@ -719,6 +793,9 @@ export class ImageLocalizer {
         meta: existing.meta,
         retryCount: existing.retryCount,
         createdAt: existing.createdAt,
+        // 死图预算跟着内存任务走，别被这次「只刷新 meta」的 upsert 抹平
+        notFoundRounds: existing.notFoundRounds,
+        lastAttemptAt: this.pendingStore?.get(filePath)?.lastAttemptAt,
       })
       log(`文件已在队列中，跳过（已刷新 meta=${meta ? 'yes' : 'no'}）: ${filePath}`)
       return 'already-queued'
@@ -750,11 +827,20 @@ export class ImageLocalizer {
     }
 
     const createdAt = Date.now()
+    // 死图预算取「传入值」与「已有续传记录」的较大者。
+    // 光按传入值会留一个洞：同步侧每轮把同一篇笔记重新写盘时会走 enqueueFile
+    // （传 0），预算被无限重置 → 死图永不退休，wedge 原样复活。
+    // 已退休的笔记续传记录已被删除，所以右键「重新本地化」仍然拿到全新预算。
+    const notFoundRounds = Math.max(
+      initialNotFoundRounds,
+      this.pendingStore?.get(filePath)?.notFoundRounds ?? 0,
+    )
     this.queue.enqueue({
       file,
       images,
       createdAt,
       retryCount: initialRetryCount,
+      notFoundRounds,
       meta,
     })
     this.pendingStore?.upsert({
@@ -762,6 +848,7 @@ export class ImageLocalizer {
       meta,
       retryCount: initialRetryCount,
       createdAt,
+      notFoundRounds,
     })
     return 'enqueued'
   }
@@ -829,8 +916,12 @@ export class ImageLocalizer {
         continue
       }
       if (
-        (await this.enqueueFileInternal(file, record.meta, record.retryCount)) ===
-        'enqueued'
+        (await this.enqueueFileInternal(
+          file,
+          record.meta,
+          record.retryCount,
+          record.notFoundRounds ?? 0,
+        )) === 'enqueued'
       ) {
         resumed++
       }
@@ -897,6 +988,9 @@ export class ImageLocalizer {
     onImageProgress?: () => void,
   ): Promise<LocalizationResult> {
     this.queue.setProcessing(true)
+    // 每轮 drain 都重新验证死图：跨轮沿用会让「图床暂时 404、稍后就绪」的图
+    // 在预算耗尽前一次真实请求都发不出去。
+    this.roundNotFoundUrls.clear()
     log('开始处理图片本地化队列...')
     const result = emptyLocalizationResult()
 
@@ -909,11 +1003,14 @@ export class ImageLocalizer {
         // in-flight 标记：task 已不在 queue[]，去重需要靠 activePath 兜住
         this.queue.setActivePath(task.file.path)
         let ok = false
+        const outcome = emptyFileLocalizeOutcome()
         try {
           // 把整个 task 传下去 —— task.meta 决定 generateFolderPath 的模板变量上下文
-          ok = await this.localizeFile(task, onImageProgress)
+          ok = await this.localizeFile(task, onImageProgress, outcome)
         } catch (error) {
-          // localizeFile 内部已 catch 所有异常并返回 false；这里只是双保险
+          // localizeFile 内部已 catch 所有异常并返回 false；这里只是双保险。
+          // 走到这里说明失败原因不明 → 按瞬态处理（永不消耗死图预算）。
+          outcome.hasTransient = true
           logError(`处理任务失败: ${task.file.path}`, error)
         } finally {
           this.queue.setActivePath(null)
@@ -927,26 +1024,49 @@ export class ImageLocalizer {
         } else {
           result.failed++
           result.failedFiles.push(task.file.path)
-          // 本轮未能全部本地化（图床源站未就绪 / 下载失败 / 保存失败）。
-          // 会话内已由下载层做过指数退避重试（imageDownloadRetries 次）；这里
-          // 【不再】立即重排在会话内狂刷（避免弱网下 hammer 图床），而是【保留】
-          // 续传记录，交给后续同步（enqueuePendingRecords）或下次重启
-          // （resumePending）再试，直到源站就绪能下到真图。
+          // 本轮未能全部本地化。会话内已由下载层做过指数退避重试
+          // （imageDownloadRetries 次）；这里【不】立即重排在会话内狂刷（避免弱网下
+          // hammer 图床），而是【保留】续传记录，交给后续同步
+          // （enqueuePendingRecords）或下次重启（resumePending）再试。
           //
-          // ⚠️ 绝不再「重试预算耗尽即 remove 丢弃」——图床未就绪是【瞬态】失败，
-          // 丢任务会导致原始远程链接永远不被本地化（钉红：Defect B）。retryCount
-          // 仅作跨会话诊断累加，不再充当丢弃闸门。stale / 已无远程图 / 笔记被删
-          // 等的自愈清理仍由 enqueueFileInternal / resumePending 负责。
+          // ⚠️ 瞬态失败（图床未就绪 / 超时 / 5xx / 坏包 / 保存失败）【绝不】因为重试
+          // 次数耗尽就被丢弃 —— 丢任务会导致原始远程链接永远不被本地化
+          // （钉红：Defect B）。retryCount 对瞬态而言只是跨会话诊断累加。
+          //
+          // 唯一例外是【服务端确认不存在】的死图（404/410，且本轮没有任何瞬态失败）：
+          // 它再重试多少次也回不来，却会让整篇笔记永远赖在续传队列里，每次同步都被
+          // 重打一遍（2026-08-26 doc-bridge R2 生命周期事故：单个用户 591 张死图）。
+          // 这类任务走 NOT_FOUND_ROUND_BUDGET 有界预算，连续耗尽即退休。
+          const deadOnly = outcome.hasNotFound && !outcome.hasTransient
+          task.notFoundRounds = deadOnly ? (task.notFoundRounds ?? 0) + 1 : 0
           task.retryCount++
-          this.pendingStore?.upsert({
-            filePath: task.file.path,
-            meta: task.meta,
-            retryCount: task.retryCount,
-            createdAt: task.createdAt,
-            // 记录本次尝试时间：后续同步重挂时据此做冷却，避免密集同步 hammer 图床。
-            lastAttemptAt: Date.now(),
-          })
-          log(`任务未完成，保留续传记录（累计第 ${task.retryCount} 次未果）: ${task.file.path}`)
+
+          if (deadOnly && task.notFoundRounds >= NOT_FOUND_ROUND_BUDGET) {
+            // 退休：清掉续传记录，不再自动重挂。正文里的原始远程链接原样保留
+            // （数据不丢），用户右键「重新本地化」或该笔记被重新同步覆盖后会
+            // 重新入队并拿到全新预算。
+            this.queue.markAsProcessed(task.file.path)
+            this.pendingStore?.remove(task.file.path)
+            log(
+              `🪦 连续 ${task.notFoundRounds} 轮只剩服务端已不存在的图片（${outcome.notFoundUrls.length} 张），` +
+                `停止自动重试并清除续传记录（正文保留原始远程链接）: ${task.file.path}`,
+            )
+            for (const url of outcome.notFoundUrls.slice(0, 5)) log(`  已失效: ${url}`)
+          } else {
+            this.pendingStore?.upsert({
+              filePath: task.file.path,
+              meta: task.meta,
+              retryCount: task.retryCount,
+              createdAt: task.createdAt,
+              notFoundRounds: task.notFoundRounds,
+              // 记录本次尝试时间：后续同步重挂时据此做冷却，避免密集同步 hammer 图床。
+              lastAttemptAt: Date.now(),
+            })
+            log(
+              `任务未完成，保留续传记录（累计第 ${task.retryCount} 次未果` +
+                `${deadOnly ? `，死图预算 ${task.notFoundRounds}/${NOT_FOUND_ROUND_BUDGET}` : ''}）: ${task.file.path}`,
+            )
+          }
         }
       }
     } finally {
@@ -982,6 +1102,9 @@ export class ImageLocalizer {
   /** 清除仅用于减少本会话重复网络请求的缓存；持久化 urlLocalMap 不受影响。 */
   clearCache(): void {
     this.sessionImageCache.clear()
+    // localizeFile 是 public，可能在 drain 之外被直接调用；一并清掉本轮死图名单，
+    // 避免上一轮的判定影响到一次独立调用。
+    this.roundNotFoundUrls.clear()
   }
 }
 

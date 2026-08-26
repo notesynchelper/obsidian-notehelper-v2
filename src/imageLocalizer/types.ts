@@ -42,7 +42,24 @@ export interface LocalizeTask {
    * fileSavedAtMap 行为一致。
    */
   meta?: LocalizerItemMeta
+  /**
+   * 连续「本轮只剩永久死链（404/410），且没有任何瞬态失败」的轮次数。
+   * 任一轮出现瞬态失败即清零；达到 NOT_FOUND_ROUND_BUDGET 即退休该任务
+   * （见 imageLocalizer.drainQueue）。缺省视作 0。
+   */
+  notFoundRounds?: number
 }
+
+/**
+ * 下载失败的原因分类 —— 上层据此区分「永久死链」与「瞬态失败」，两者的重试
+ * 策略完全不同（见 imageLocalizer 的 NOT_FOUND_ROUND_BUDGET）：
+ * - `not-found`：服务端明确回 404/410，且已在**所有可用备用线路**上交叉验证过
+ *   （或命中权威源站）。这类图再重试多少次也回不来。
+ * - `transient`：其它一切失败（超时 / 5xx / 断网 / 坏包 / 占位页 / 半截图）。
+ *   按瞬态处理、永久重试，绝不丢弃（钉红：Defect B）。
+ * 成功时不设置该字段。
+ */
+export type DownloadFailureKind = 'not-found' | 'transient'
 
 /**
  * 图片下载结果
@@ -56,6 +73,30 @@ export interface DownloadResult {
   error?: string
   /** 文件内容（ArrayBuffer） */
   data?: ArrayBuffer
+  /** 失败原因分类；success=true 时不设置 */
+  failureKind?: DownloadFailureKind
+}
+
+/**
+ * 单个文件本轮本地化「未完成原因」的回填出参（sink）。
+ *
+ * localizeFile 的返回值仍是 boolean（历史契约，多处测试/调用方依赖），失败原因
+ * 通过这个可选出参回填给 drainQueue，让它能区分：
+ *   - 只剩服务端确认不存在的死图 → 计入有界预算，耗尽即退休；
+ *   - 存在瞬态失败 → 永久重试，预算清零。
+ * 不传 sink 时行为与历史完全一致（一律按瞬态处理）。
+ */
+export interface FileLocalizeOutcome {
+  /** 本轮至少有一张图被服务端确认不存在（404/410，且跨可用线路交叉验证过） */
+  hasNotFound: boolean
+  /** 本轮至少有一次瞬态失败（下载/保存/读写/校验），含整文件级错误 */
+  hasTransient: boolean
+  /** 本轮判定为永久不存在的图片 URL（日志/诊断用，已去重） */
+  notFoundUrls: string[]
+}
+
+export function emptyFileLocalizeOutcome(): FileLocalizeOutcome {
+  return { hasNotFound: false, hasTransient: false, notFoundUrls: [] }
 }
 
 /**
