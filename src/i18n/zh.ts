@@ -435,7 +435,7 @@ const zh: Dict = {
       linkTemplate: {
         name: '日记链接模板',
         descMain:
-          '每条链接按这个模板写进日记，可以写成多行。多行模板落盘时会与上下内容各空一行、条目之间也空一行；单行模板逐条紧挨着写。留空恢复默认。',
+          '每条链接按这个模板写进日记，可以写成多行。空行完全由模板决定：第一行留空 = 链接前面空一行，末尾多留一个空行 = 链接后面空一行；不留就紧挨着上下内容写。留空恢复默认。',
         variablesIntro: '可用变量：',
         varLink: '完整链接（推荐直接用）',
         varTitle: '显示文字（已按「双链最大字符数」截断）',
@@ -449,7 +449,8 @@ const zh: Dict = {
         functionsNote: '文章模板里的内置函数（formatDate、upperCase 等）在这里同样可用。',
         examplesIntro: '示例：',
         example1: '列表项（默认）',
-        example2: '分隔线 + 时间 + 链接（三行）：',
+        example2: '空一行 + 分隔线 + 时间 + 链接（第一行留空，块与上文之间就空一行）：',
+        exampleBlankLine: '（空行）',
         previewLabel: '预览',
         previewError: '模板有误',
         sampleTitle: '示例文章标题',

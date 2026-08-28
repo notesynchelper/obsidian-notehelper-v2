@@ -16,9 +16,8 @@ import {
 	buildDiaryLinkView,
 	renderDiaryLinkTemplate,
 	resolveDiaryLinkTemplate,
-	isBlockTemplate,
-	blankLineGap,
-	joinLinkBlocks,
+	appendDiaryIdMarker,
+	layoutDiaryLinkEntries,
 } from './diaryLinkTemplate'
 
 /**
@@ -218,7 +217,7 @@ export class DiaryLinkProcessor {
 	 */
 	private renderLinkEntry(
 		linkItem: DiaryLinkItem,
-	): { text: string; bareLink: string; block: boolean } {
+	): { text: string; bareLink: string } {
 		const { link, title } = this.buildBareLink(linkItem)
 		const view = buildDiaryLinkView({
 			item: linkItem.item,
@@ -235,7 +234,7 @@ export class DiaryLinkProcessor {
 		let text: string | null = null
 		try {
 			const rendered = renderDiaryLinkTemplate(template, view)
-			if (rendered) {
+			if (rendered.trim()) {
 				text = rendered
 			} else {
 				this.reportTemplateFailure(new Error('模板渲染结果为空'))
@@ -243,13 +242,10 @@ export class DiaryLinkProcessor {
 		} catch (error) {
 			this.reportTemplateFailure(error)
 		}
-		let usedTemplate = template
 		if (text === null) {
-			usedTemplate = DEFAULT_DIARY_LINK_TEMPLATE
-			text = renderDiaryLinkTemplate(usedTemplate, view)
+			text = renderDiaryLinkTemplate(DEFAULT_DIARY_LINK_TEMPLATE, view)
 		}
-		// 多行模板 → 块模式（条目之间 / 与前后内容之间空一行）；回落默认时按默认（单行）算
-		return { text, bareLink: link, block: isBlockTemplate(usedTemplate) }
+		return { text, bareLink: link }
 	}
 
 	private reportTemplateFailure(error: unknown): void {
@@ -391,20 +387,18 @@ export class DiaryLinkProcessor {
 		// （上面 existingIds 照扫），与另外两个「不写 id」开关的承诺一致。
 		const noMarkers = this.noDiaryMarkers
 		const newLinks: string[] = []
-		let blockMode = false
 		for (const link of this.sortLinks(targets, plan.order)) {
 			if (existingIds.has(link.item.id)) continue
 			const entry = this.renderLinkEntry(link)
 			// 串匹配兜底只看裸 [[…]]：旧版前缀形态、无 id 模式、换过模板的历史行都能认出来
 			if (scopeContent.includes(entry.bareLink)) continue
-			// id 标记挂在渲染结果最后一行末尾（单行模板 = 与旧版同形）
+			// id 标记挂在渲染结果最后一个非空行的末尾（单行模板 = 与旧版同形；模板末尾的空行留在标记后面）
 			newLinks.push(
 				noMarkers
 					? entry.text
-					: `${entry.text} <!-- ${DIARY_ID_MARKER_PREFIX}${link.item.id} -->`,
+					: appendDiaryIdMarker(entry.text, `<!-- ${DIARY_ID_MARKER_PREFIX}${link.item.id} -->`),
 			)
 			existingIds.add(link.item.id)
-			blockMode = blockMode || entry.block
 		}
 
 		if (newLinks.length === 0) {
@@ -412,23 +406,10 @@ export class DiaryLinkProcessor {
 			return { success: true, selfLinks }
 		}
 
+		// 空行由模板自己决定（第一行留空 = 前面空一行；末尾多留一个空行 = 后面空一行），
+		// 这里只保证每条从新行开始、以一个换行结束；单行模板与历史实现逐字节一致。
 		const at = plan.insertAt
-		let linksText: string
-		if (blockMode) {
-			// 多行模板 = 块模式：同批条目之间空一行；整块与前后既有内容之间至少一个空行
-			// （按拼接处实际已有的换行补差，不叠加）；落在文件末尾时只补一个换行收尾。
-			const before = content.slice(0, at)
-			const after = content.slice(at)
-			const blocks = joinLinkBlocks(newLinks)
-			linksText =
-				blankLineGap(before, blocks) + blocks + (after ? blankLineGap(blocks, after) : '\n')
-		} else {
-			// 单行模板：与历史实现逐字节一致——前后各按需补一个换行，保证插入的每条链接
-			// 独占一行、且不把落点后面原有的内容（第二个锚点 / 正文首行）粘到同一行上。
-			const leading = at === 0 || content[at - 1] === '\n' ? '' : '\n'
-			const trailing = content[at] === '\n' ? '' : '\n'
-			linksText = leading + newLinks.join('\n') + trailing
-		}
+		const linksText = layoutDiaryLinkEntries(newLinks, content, at)
 		const nextContent = content.slice(0, at) + linksText + content.slice(at)
 
 		// 写入文件

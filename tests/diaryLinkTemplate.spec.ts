@@ -219,12 +219,12 @@ describe('日记链接模板：默认值 = 旧「双链前缀」行为（零回�
 		expect(region(after)).toContain('\n- [[article-file|Some Article Title]] <!-- notehelper:id:item-1 -->\n')
 	})
 
-	it('单行模板尾部多余的换行 / 空格被去掉，不会在日记里留出空行', async () => {
+	it('模板末尾的空格被去掉；末尾多留的空行原样落盘（后面空一行由模板决定）', async () => {
 		const after = await syncOnce({ diaryLinkTemplate: '- {{{link}}}  \n\n' })
 		expect(after).toBe(
 			`# 2024-01-15\n\n${ANCHOR_TAG}\n` +
 				'- [[article-file|Some Article Title]] <!-- notehelper:id:item-1 -->\n' +
-				`\n${ANCHOR_TAG}\n`,
+				`\n\n${ANCHOR_TAG}\n`,
 		)
 	})
 })

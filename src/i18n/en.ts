@@ -450,7 +450,7 @@ const en = {
       linkTemplate: {
         name: 'Diary link template',
         descMain:
-          'Each link is written into the diary using this template, which may span several lines. A multi-line template gets a blank line before and after it and between entries; a single-line template writes entries directly one after another. Leave empty to restore the default.',
+          'Each link is written into the diary using this template, which may span several lines. Blank lines are entirely up to the template: leave the first line empty for a blank line before the link, add an extra empty line at the end for a blank line after it; otherwise entries sit right next to the surrounding text. Leave empty to restore the default.',
         variablesIntro: 'Available variables:',
         varLink: 'the full link (recommended)',
         varTitle: 'display text (already truncated by "Link max length")',
@@ -464,7 +464,8 @@ const en = {
         functionsNote: 'Built-in functions from the article template (formatDate, upperCase, …) also work here.',
         examplesIntro: 'Examples:',
         example1: 'list item (default)',
-        example2: 'divider + time + link (three lines):',
+        example2: 'blank line + divider + time + link (empty first line = one blank line above the block):',
+        exampleBlankLine: '(empty line)',
         previewLabel: 'Preview',
         previewError: 'Template error',
         sampleTitle: 'Sample article title',

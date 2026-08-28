@@ -1,17 +1,16 @@
 /**
- * 日记链接「块间距」——多行模板写入日记时的空行规则（问题 7）
+ * 日记链接落盘的空行规则——**空行由模板自己决定，插件不额外补**（问题 7，2026-08-28 用户拍板修订）
  *
- * 用户诉求（企微工单 2026-08-16~27）：「文件底部」写入时链接紧贴上一条内容、
- * 中间没有空行，挤在一起不好看。
+ * 用户诉求（企微工单 2026-08-16~27）：「文件底部」写入时链接紧贴上一条内容、中间没有空行。
+ * 最初实现是「多行模板自动与上下各空一行」，用户要求改成模板控制。
  *
- * 规则（设计 §B2）：
- *   - 单行模板（去掉尾部空白后不含换行）：行为与旧版逐字节一致——同批 `\n` 相连成列表，
- *     前后只按需补一个 `\n`。
- *   - 多行模板：同批条目之间空一行；整块与前后既有内容之间**至少一个空行**
- *     （前面：before 非空且不以空行结尾就补到有空行；后面同理）。
- *     用户模板自带的开头空行不重复叠加——按拼接后的实际字符判断，不是无脑加。
- *   - 三种写入位置（锚点之间 ASC/DESC、顶部、底部）+ 文件末尾无换行 / 一个换行 /
- *     已有空行三种边界都要成立；多轮同步幂等（不累加空行）。
+ * 规则（设计 §B2，文件模型）：
+ *   - 每条链接从新的一行开始；每条以**一个**换行结束（模板没写就补一个，写了一个就是行尾，
+ *     多写的每个换行都是一个空行）；模板开头的空行原样保留。
+ *   - 落点后面本来就是换行时，条目的行尾换行与之合并，不凭空多出空行。
+ *   - 所以「前面空一行」= 模板第一行留空；「后面空一行」= 模板末尾多留一个空行。
+ *   - 单行模板（含末尾多打一个换行的）与旧版「双链前缀」逐字节一致。
+ *   - id 标记挂在最后一个非空行末尾，模板末尾的空行留在标记后面。
  */
 
 jest.mock('obsidian', () => {
@@ -158,7 +157,12 @@ async function sync(
 const BOTTOM = { diaryWritePosition: DiaryWritePosition.BOTTOM, diaryLinkTemplate: BLOCK_TEMPLATE }
 const TOP = { diaryWritePosition: DiaryWritePosition.TOP, diaryLinkTemplate: BLOCK_TEMPLATE }
 
-describe('单行模板：与旧版逐字节一致（块间距只对多行模板生效）', () => {
+/** 第一行留空的三行模板：用户要的「与上文空一行 + 分隔线 + 时间 + 链接」 */
+const GAP_TEMPLATE = '\n---\n{{{timeSaved}}}\n{{{link}}}'
+const BOTTOM_GAP = { diaryWritePosition: DiaryWritePosition.BOTTOM, diaryLinkTemplate: GAP_TEMPLATE }
+const TOP_GAP = { diaryWritePosition: DiaryWritePosition.TOP, diaryLinkTemplate: GAP_TEMPLATE }
+
+describe('单行模板：与旧版逐字节一致', () => {
 	it('底部：同批相连成列表，前面只补一个换行，条目之间没有空行', async () => {
 		const v = buildVault('# 头\n\n正文')
 		const after = await sync(v, { diaryWritePosition: DiaryWritePosition.BOTTOM }, [
@@ -168,7 +172,7 @@ describe('单行模板：与旧版逐字节一致（块间距只对多行模板�
 		expect(after).toBe(`# 头\n\n正文\n${line('A')}\n${line('B')}\n`)
 	})
 
-	it('单行模板尾部多打了换行仍算单行（去尾部空白后无换行），不触发块间距', async () => {
+	it('单行模板末尾多打一个换行 = 行尾，不会多出空行（与不打时逐字节相同）', async () => {
 		const v = buildVault('# 头\n\n正文\n')
 		const after = await sync(
 			v,
@@ -191,172 +195,226 @@ describe('单行模板：与旧版逐字节一致（块间距只对多行模板�
 	})
 })
 
-describe('多行模板 · 文件底部', () => {
-	it('文件以单个换行结尾 → 块前空一行，块后一个换行收尾', async () => {
+describe('多行模板但没留空行：紧挨着上下内容写（插件不自动补空行）', () => {
+	it('底部：块紧跟正文，块尾一个换行收尾', async () => {
 		const v = buildVault('# 头\n\n正文\n')
 		const after = await sync(v, BOTTOM, [articleAt(10, 'A')])
-		expect(after).toBe(`# 头\n\n正文\n\n${block(10, 'A')}\n`)
+		expect(after).toBe(`# 头\n\n正文\n${block(10, 'A')}\n`)
 	})
 
-	it('文件末尾没有换行 → 补到有一个空行', async () => {
+	it('底部 + 文件末尾没有换行：只起一行，不空行', async () => {
 		const v = buildVault('# 头\n\n正文')
 		const after = await sync(v, BOTTOM, [articleAt(10, 'A')])
-		expect(after).toBe(`# 头\n\n正文\n\n${block(10, 'A')}\n`)
+		expect(after).toBe(`# 头\n\n正文\n${block(10, 'A')}\n`)
 	})
 
-	it('文件末尾已经有空行 → 不再叠加', async () => {
-		const v = buildVault('# 头\n\n正文\n\n')
-		const after = await sync(v, BOTTOM, [articleAt(10, 'A')])
-		expect(after).toBe(`# 头\n\n正文\n\n${block(10, 'A')}\n`)
-	})
-
-	it('同批多条：条目之间恰好一个空行，且按时间升序', async () => {
+	it('底部 + 同批多条：条目之间也不空行', async () => {
 		const v = buildVault('正文\n')
 		const after = await sync(v, BOTTOM, [articleAt(12, 'B'), articleAt(9, 'A')])
-		expect(after).toBe(`正文\n\n${block(9, 'A')}\n\n${block(12, 'B')}\n`)
+		expect(after).toBe(`正文\n${block(9, 'A')}\n${block(12, 'B')}\n`)
 	})
 
-	it('多轮同步：新块接在旧块之下、之间一个空行，幂等不累加', async () => {
-		const v = buildVault('正文\n')
-		await sync(v, BOTTOM, [articleAt(9, 'A')])
-		const afterFirst = await sync(v, BOTTOM, [articleAt(20, 'B')])
-		expect(afterFirst).toBe(`正文\n\n${block(9, 'A')}\n\n${block(20, 'B')}\n`)
-		// 同一批再来一次：文件逐字节不变
-		const afterRepeat = await sync(v, BOTTOM, [articleAt(9, 'A'), articleAt(20, 'B')])
-		expect(afterRepeat).toBe(afterFirst)
-	})
-
-	it('空文件：块直接落在开头，没有前导空行', async () => {
-		const v = buildVault('')
-		const after = await sync(v, BOTTOM, [articleAt(10, 'A')])
-		expect(after).toBe(`${block(10, 'A')}\n`)
-	})
-})
-
-describe('多行模板 · 文件顶部', () => {
-	it('无前置元数据：块在最上方（前面没有内容就不加空行），与正文之间空一行', async () => {
-		const v = buildVault('# 头\n正文\n')
-		const after = await sync(v, TOP, [articleAt(10, 'A')])
-		expect(after).toBe(`${block(10, 'A')}\n\n# 头\n正文\n`)
-	})
-
-	it('有前置元数据：属性块之后空一行、块、再空一行接正文', async () => {
+	it('顶部 + 前置元数据：块紧贴属性块之后、正文之前', async () => {
 		const v = buildVault('---\na: 1\n---\n# 头\n')
 		const after = await sync(v, TOP, [articleAt(10, 'A')])
-		expect(after).toBe(`---\na: 1\n---\n\n${block(10, 'A')}\n\n# 头\n`)
+		expect(after).toBe(`---\na: 1\n---\n${block(10, 'A')}\n# 头\n`)
 	})
 
-	it('正文本来就以空行开头 → 不再叠加', async () => {
-		const v = buildVault('---\na: 1\n---\n\n# 头\n')
-		const after = await sync(v, TOP, [articleAt(10, 'A')])
-		expect(after).toBe(`---\na: 1\n---\n\n${block(10, 'A')}\n\n# 头\n`)
-	})
-
-	it('多轮同步：新块压在旧块之上、之间一个空行；同批按时间降序', async () => {
-		const v = buildVault('# 头\n')
-		await sync(v, TOP, [articleAt(9, 'A')])
-		const after = await sync(v, TOP, [articleAt(20, 'B'), articleAt(21, 'C')])
-		expect(after).toBe(`${block(21, 'C')}\n\n${block(20, 'B')}\n\n${block(9, 'A')}\n\n# 头\n`)
-	})
-})
-
-describe('多行模板 · 锚点之间', () => {
-	const ANCHOR_DESC = {
-		diaryWritePosition: DiaryWritePosition.ANCHOR,
-		diaryLinkOrder: DiaryLinkOrder.DESC,
-		diaryLinkTemplate: BLOCK_TEMPLATE,
-	}
-	const ANCHOR_ASC = { ...ANCHOR_DESC, diaryLinkOrder: DiaryLinkOrder.ASC }
-
-	it('降序：块与两个锚点之间各空一行', async () => {
+	it('锚点之间：块紧挨两个锚点', async () => {
 		const v = buildVault(`# 头\n\n${TAG}\n${TAG}\n`)
-		const after = await sync(v, ANCHOR_DESC, [articleAt(10, 'A')])
-		expect(after).toBe(`# 头\n\n${TAG}\n\n${block(10, 'A')}\n\n${TAG}\n`)
-	})
-
-	it('降序多轮：新块在上，块间一个空行，闭合锚点前仍只有一个空行', async () => {
-		const v = buildVault(`${TAG}\n${TAG}\n`)
-		await sync(v, ANCHOR_DESC, [articleAt(9, 'A')])
-		const after = await sync(v, ANCHOR_DESC, [articleAt(20, 'B')])
-		expect(after).toBe(`${TAG}\n\n${block(20, 'B')}\n\n${block(9, 'A')}\n\n${TAG}\n`)
-	})
-
-	it('升序多轮：新块追加在下方，块间一个空行', async () => {
-		const v = buildVault(`${TAG}\n${TAG}\n`)
-		await sync(v, ANCHOR_ASC, [articleAt(9, 'A')])
-		const after = await sync(v, ANCHOR_ASC, [articleAt(20, 'B')])
-		expect(after).toBe(`${TAG}\n\n${block(9, 'A')}\n\n${block(20, 'B')}\n\n${TAG}\n`)
-	})
-
-	it('区域里已有旧版单行链接：多行块与旧行之间空一行，旧行不动', async () => {
-		const v = buildVault(`${TAG}\n- [[file-X|X]] <!-- notehelper:id:item-X -->\n${TAG}\n`)
-		const after = await sync(v, ANCHOR_ASC, [articleAt(10, 'A')])
-		expect(after).toBe(
-			`${TAG}\n- [[file-X|X]] <!-- notehelper:id:item-X -->\n\n${block(10, 'A')}\n\n${TAG}\n`,
-		)
-	})
-
-	it('缺锚点仍然跳过、文件不动（块间距不改变锚点语义）', async () => {
-		const v = buildVault('# 头\n')
-		const after = await sync(v, ANCHOR_DESC, [articleAt(10, 'A')])
-		expect(after).toBe('# 头\n')
-	})
-})
-
-describe('多行模板 · 用户自带的空行不重复叠加', () => {
-	it('模板开头故意留了空行 → 与前文之间仍只有一个空行', async () => {
-		const v = buildVault('正文\n')
-		const after = await sync(
-			v,
-			{ diaryWritePosition: DiaryWritePosition.BOTTOM, diaryLinkTemplate: '\n---\n{{{link}}}' },
-			[articleAt(10, 'A')],
-		)
-		expect(after).toBe('正文\n\n---\n[[file-A|A]] <!-- notehelper:id:item-A -->\n')
-	})
-
-	it('模板开头留空行 + 同批多条 → 条目之间也只有一个空行', async () => {
-		const v = buildVault('正文\n')
-		const after = await sync(
-			v,
-			{ diaryWritePosition: DiaryWritePosition.BOTTOM, diaryLinkTemplate: '\n---\n{{{link}}}' },
-			[articleAt(9, 'A'), articleAt(12, 'B')],
-		)
-		expect(after).toBe(
-			'正文\n\n---\n[[file-A|A]] <!-- notehelper:id:item-A -->\n\n---\n[[file-B|B]] <!-- notehelper:id:item-B -->\n',
-		)
-	})
-
-	it('锚点区域已经以空行开头 / 结尾 → 不再多加', async () => {
-		const v = buildVault(`${TAG}\n\n\n${TAG}\n`)
 		const after = await sync(
 			v,
 			{ diaryWritePosition: DiaryWritePosition.ANCHOR, diaryLinkOrder: DiaryLinkOrder.DESC, diaryLinkTemplate: BLOCK_TEMPLATE },
 			[articleAt(10, 'A')],
 		)
-		expect(after).toBe(`${TAG}\n\n${block(10, 'A')}\n\n\n${TAG}\n`)
+		expect(after).toBe(`# 头\n\n${TAG}\n${block(10, 'A')}\n${TAG}\n`)
 	})
 })
 
-// codex review 2026-08-28：只含空格 / 制表符的行也算空行，否则会在它旁边再补一个真空行
-import { blankLineGap, joinLinkBlocks } from '../src/sync/diaryLinkTemplate'
+describe('模板第一行留空 = 前面空一行', () => {
+	it('底部：文件以单个换行结尾 → 正文与块之间恰好一个空行', async () => {
+		const v = buildVault('# 头\n\n正文\n')
+		const after = await sync(v, BOTTOM_GAP, [articleAt(10, 'A')])
+		expect(after).toBe(`# 头\n\n正文\n\n${block(10, 'A')}\n`)
+	})
 
-describe('blankLineGap：空白行（只有空格/制表符）算作空行', () => {
-	it('左侧以「\\n  \\n」结尾（看不见的空行）→ 已经隔开，不再补', () => {
-		expect(blankLineGap('正文\n  \n', '---\nx')).toBe('')
+	it('底部：文件末尾没有换行 → 先起一行再空一行', async () => {
+		const v = buildVault('# 头\n\n正文')
+		const after = await sync(v, BOTTOM_GAP, [articleAt(10, 'A')])
+		expect(after).toBe(`# 头\n\n正文\n\n${block(10, 'A')}\n`)
 	})
-	it('右侧以「  \\n」开头 → 与左侧的单个换行合起来刚好一个空行', () => {
-		expect(blankLineGap('正文\n', '  \n---')).toBe('')
+
+	it('底部：文件末尾本来就有空行 → 模板的空行照加（两个空行——模板说了算，插件不去重）', async () => {
+		const v = buildVault('# 头\n\n正文\n\n')
+		const after = await sync(v, BOTTOM_GAP, [articleAt(10, 'A')])
+		expect(after).toBe(`# 头\n\n正文\n\n\n${block(10, 'A')}\n`)
 	})
-	it('左侧只有一个换行 + 右侧无空行 → 补一个换行（原规则不变）', () => {
-		expect(blankLineGap('正文\n', '---')).toBe('\n')
+
+	it('底部 + 同批多条：每条前面各空一行，按时间升序', async () => {
+		const v = buildVault('正文\n')
+		const after = await sync(v, BOTTOM_GAP, [articleAt(12, 'B'), articleAt(9, 'A')])
+		expect(after).toBe(`正文\n\n${block(9, 'A')}\n\n${block(12, 'B')}\n`)
 	})
-	it('左侧末尾是制表符空行「\\n\\t\\n」→ 不再补', () => {
-		expect(blankLineGap('正文\n\t\n', '---')).toBe('')
+
+	it('底部多轮同步：新块接在旧块之下、之间一个空行；同批重跑逐字节不变', async () => {
+		const v = buildVault('正文\n')
+		await sync(v, BOTTOM_GAP, [articleAt(9, 'A')])
+		const afterFirst = await sync(v, BOTTOM_GAP, [articleAt(20, 'B')])
+		expect(afterFirst).toBe(`正文\n\n${block(9, 'A')}\n\n${block(20, 'B')}\n`)
+		const afterRepeat = await sync(v, BOTTOM_GAP, [articleAt(9, 'A'), articleAt(20, 'B')])
+		expect(afterRepeat).toBe(afterFirst)
 	})
-	it('左侧末尾只有空格没有换行 → 仍补两个换行', () => {
-		expect(blankLineGap('正文  ', '---')).toBe('\n\n')
+
+	it('空文件：模板开头的空行也原样落盘（模板说了算）', async () => {
+		const v = buildVault('')
+		const after = await sync(v, BOTTOM_GAP, [articleAt(10, 'A')])
+		expect(after).toBe(`\n${block(10, 'A')}\n`)
 	})
-	it('joinLinkBlocks：条目自带的空白尾行不会让条目间多出第二个空行', () => {
-		expect(joinLinkBlocks(['a\n  \n', 'b'])).toBe('a\n  \nb')
+
+	it('顶部 + 前置元数据：属性块之后空一行、块、正文紧跟（后面没留空行就不空）', async () => {
+		const v = buildVault('---\na: 1\n---\n# 头\n')
+		const after = await sync(v, TOP_GAP, [articleAt(10, 'A')])
+		expect(after).toBe(`---\na: 1\n---\n\n${block(10, 'A')}\n# 头\n`)
+	})
+
+	it('顶部多轮：新块压在旧块之上、之间一个空行；同批按时间降序', async () => {
+		const v = buildVault('# 头\n')
+		await sync(v, TOP_GAP, [articleAt(9, 'A')])
+		const after = await sync(v, TOP_GAP, [articleAt(20, 'B'), articleAt(21, 'C')])
+		expect(after).toBe(`\n${block(21, 'C')}\n\n${block(20, 'B')}\n\n${block(9, 'A')}\n# 头\n`)
+	})
+
+	it('锚点之间（降序）：开锚点之后空一行，块，闭锚点紧跟', async () => {
+		const v = buildVault(`# 头\n\n${TAG}\n${TAG}\n`)
+		const after = await sync(
+			v,
+			{ diaryWritePosition: DiaryWritePosition.ANCHOR, diaryLinkOrder: DiaryLinkOrder.DESC, diaryLinkTemplate: GAP_TEMPLATE },
+			[articleAt(10, 'A')],
+		)
+		expect(after).toBe(`# 头\n\n${TAG}\n\n${block(10, 'A')}\n${TAG}\n`)
+	})
+
+	it('锚点之间（升序）多轮：新块追加在下方，块间一个空行', async () => {
+		const opts = { diaryWritePosition: DiaryWritePosition.ANCHOR, diaryLinkOrder: DiaryLinkOrder.ASC, diaryLinkTemplate: GAP_TEMPLATE }
+		const v = buildVault(`${TAG}\n${TAG}\n`)
+		await sync(v, opts, [articleAt(9, 'A')])
+		const after = await sync(v, opts, [articleAt(20, 'B')])
+		expect(after).toBe(`${TAG}\n\n${block(9, 'A')}\n\n${block(20, 'B')}\n${TAG}\n`)
+	})
+
+	it('缺锚点仍然跳过、文件不动', async () => {
+		const v = buildVault('# 头\n')
+		const after = await sync(
+			v,
+			{ diaryWritePosition: DiaryWritePosition.ANCHOR, diaryLinkOrder: DiaryLinkOrder.DESC, diaryLinkTemplate: GAP_TEMPLATE },
+			[articleAt(10, 'A')],
+		)
+		expect(after).toBe('# 头\n')
+	})
+})
+
+describe('模板末尾多留一个空行 = 后面空一行；id 标记挂在最后一个非空行', () => {
+	const TRAIL = { diaryWritePosition: DiaryWritePosition.BOTTOM, diaryLinkTemplate: '---\n{{{link}}}\n\n' }
+
+	it('底部：块后面空一行，标记在链接行末尾、空行在标记后面', async () => {
+		const v = buildVault('正文\n')
+		const after = await sync(v, TRAIL, [articleAt(10, 'A')])
+		expect(after).toBe('正文\n---\n[[file-A|A]] <!-- notehelper:id:item-A -->\n\n')
+	})
+
+	it('底部 + 同批多条：每条后面各空一行', async () => {
+		const v = buildVault('正文\n')
+		const after = await sync(v, TRAIL, [articleAt(9, 'A'), articleAt(12, 'B')])
+		expect(after).toBe(
+			'正文\n---\n[[file-A|A]] <!-- notehelper:id:item-A -->\n\n---\n[[file-B|B]] <!-- notehelper:id:item-B -->\n\n',
+		)
+	})
+
+	it('顶部：块后面空一行再接正文（模板尾空行与落点后的换行合并，不会变成两个空行）', async () => {
+		const v = buildVault('# 头\n')
+		const after = await sync(
+			v,
+			{ diaryWritePosition: DiaryWritePosition.TOP, diaryLinkTemplate: '- {{{link}}}\n\n' },
+			[articleAt(10, 'A')],
+		)
+		expect(after).toBe('- [[file-A|A]] <!-- notehelper:id:item-A -->\n\n# 头\n')
+	})
+
+	it('「日记不写 id」：没有标记时模板尾空行同样保留', async () => {
+		const v = buildVault('正文\n')
+		const after = await sync(v, { ...TRAIL, disableDiaryLinkMarkers: true }, [articleAt(10, 'A')])
+		expect(after).toBe('正文\n---\n[[file-A|A]]\n\n')
+	})
+
+	it('模板末尾只有空格 / 制表符 → 去掉，不算空行', async () => {
+		const v = buildVault('正文\n')
+		const after = await sync(
+			v,
+			{ diaryWritePosition: DiaryWritePosition.BOTTOM, diaryLinkTemplate: '- {{{link}}}  \t' },
+			[articleAt(10, 'A')],
+		)
+		expect(after).toBe(`正文\n${line('A')}\n`)
+	})
+})
+
+describe('区域里已有旧版单行链接：新块按模板落在其后，旧行不动', () => {
+	it('升序锚点区域：留空第一行的模板与旧行之间空一行', async () => {
+		const v = buildVault(`${TAG}\n- [[file-X|X]] <!-- notehelper:id:item-X -->\n${TAG}\n`)
+		const after = await sync(
+			v,
+			{ diaryWritePosition: DiaryWritePosition.ANCHOR, diaryLinkOrder: DiaryLinkOrder.ASC, diaryLinkTemplate: GAP_TEMPLATE },
+			[articleAt(10, 'A')],
+		)
+		expect(after).toBe(
+			`${TAG}\n- [[file-X|X]] <!-- notehelper:id:item-X -->\n\n${block(10, 'A')}\n${TAG}\n`,
+		)
+	})
+})
+
+// 纯函数层：layoutDiaryLinkEntries / appendDiaryIdMarker / terminateEntry
+import { layoutDiaryLinkEntries, appendDiaryIdMarker, terminateEntry, normalizeEntryTail } from '../src/sync/diaryLinkTemplate'
+
+describe('layoutDiaryLinkEntries：落盘拼接规则', () => {
+	it('落点在行首、后面是空行 → 条目完整成行，后面的空行是别人的、不动', () => {
+		expect(layoutDiaryLinkEntries(['- a'], 'X\n\nY', 2)).toBe('- a\n')
+	})
+	it('落点在某行末尾、后面是那行的换行（锚点降序）→ 先起一行，行尾换行合并（旧版同形）', () => {
+		expect(layoutDiaryLinkEntries(['- a'], 'X\nY', 1)).toBe('\n- a')
+	})
+	it('落点在某行末尾且是文件末尾 → 起一行，以一个换行收尾', () => {
+		expect(layoutDiaryLinkEntries(['- a'], 'X', 1)).toBe('\n- a\n')
+	})
+	it('文件末尾（行首）→ 以一个换行收尾', () => {
+		expect(layoutDiaryLinkEntries(['- a', '- b'], 'X\n', 2)).toBe('- a\n- b\n')
+	})
+	it('条目自带尾空行 → 行首落点原样保留', () => {
+		expect(layoutDiaryLinkEntries(['- a\n\n'], 'X\n\nY', 2)).toBe('- a\n\n')
+	})
+	it('空文件 + 模板开头空行 → 原样', () => {
+		expect(layoutDiaryLinkEntries(['\n- a'], '', 0)).toBe('\n- a\n')
+	})
+})
+
+describe('appendDiaryIdMarker / terminateEntry', () => {
+	it('无尾换行：标记接在末尾（与旧版同形）', () => {
+		expect(appendDiaryIdMarker('- [[a]]', '<!-- m -->')).toBe('- [[a]] <!-- m -->')
+	})
+	it('有尾空行：标记挂在最后一个非空行，空行留在后面', () => {
+		expect(appendDiaryIdMarker('---\n[[a]]\n\n', '<!-- m -->')).toBe('---\n[[a]] <!-- m -->\n\n')
+	})
+	it('尾部是空白行「\\n  \\n」：仍挂在最后一个非空行', () => {
+		expect(appendDiaryIdMarker('[[a]]\n  \n', '<!-- m -->')).toBe('[[a]] <!-- m -->\n  \n')
+	})
+	it('normalizeEntryTail：去掉最后非空行的尾空格，尾部空白行归一为纯换行、个数不变', () => {
+		expect(normalizeEntryTail('- [[a]]  \n\n')).toBe('- [[a]]\n\n')
+		expect(normalizeEntryTail('x\n  \n')).toBe('x\n\n')
+		expect(normalizeEntryTail('x  \t')).toBe('x')
+		expect(normalizeEntryTail('\n---\nx')).toBe('\n---\nx')
+		expect(normalizeEntryTail('a\n\nb')).toBe('a\n\nb')
+	})
+	it('terminateEntry：没换行补一个，有换行原样', () => {
+		expect(terminateEntry('x')).toBe('x\n')
+		expect(terminateEntry('x\n')).toBe('x\n')
+		expect(terminateEntry('x\n\n')).toBe('x\n\n')
 	})
 })

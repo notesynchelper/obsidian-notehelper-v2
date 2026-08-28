@@ -2020,6 +2020,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             fragment.append(
               t('settings.diary.linkTemplate.example2'),
               fragment.createEl('br'),
+              fragment.createEl('code', { text: t('settings.diary.linkTemplate.exampleBlankLine') }),
+              fragment.createEl('br'),
               fragment.createEl('code', { text: '---' }),
               fragment.createEl('br'),
               fragment.createEl('code', { text: '{{{timeSaved}}}' }),

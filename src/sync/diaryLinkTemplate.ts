@@ -57,57 +57,71 @@ export function resolveDiaryLinkTemplate(raw: string | undefined | null): string
 /**
  * 渲染一条日记链接。
  * - Templater 标签 `<% %>` 先掩码再还原（与文章 / 消息模板一致，原样保留给 Templater）
- * - 去掉尾部空白（模板末尾多打的换行不会在日记里留出空行）；开头的空行保留——
- *   那是用户故意写的
+ * - **换行原样保留**：空行完全由模板自己决定——模板第一行留空 = 这条前面空一行，
+ *   末尾多留一个空行 = 这条后面空一行。只去掉最后一行尾部的空格 / 制表符。
  * - 模板语法错误会抛出，由调用方决定回落
  */
 export function renderDiaryLinkTemplate(template: string, view: Record<string, unknown>): string {
 	const mask = maskTemplaterTags(template)
 	const rendered = mask.restore(Mustache.render(mask.text, view))
-	return rendered.replace(/\s+$/, '')
-}
-
-// ---------------------------------------------------------------------------
-// 块间距：多行模板写进日记时的空行规则
-//
-// 单行模板（去掉尾部空白后不含换行）沿用旧版拼法：同批 `\n` 相连成列表，前后只按需
-// 补一个 `\n`。多行模板才进「块模式」：同批条目之间空一行，整块与前后既有内容之间
-// 至少一个空行——按拼接处**实际已有**的换行数补差，用户模板自带的开头空行、
-// 文件里本来就有的空行都算数，不会叠成两个空行。
-// ---------------------------------------------------------------------------
-
-/** 多行模板 = 去掉尾部空白后仍含换行（模板末尾多打的换行不算） */
-export function isBlockTemplate(template: string): boolean {
-	return template.replace(/\s+$/, '').includes('\n')
-}
-
-function countNewlines(s: string): number {
-	return (s.match(/\n/g) || []).length
-}
-
-// 只含空格 / 制表符的行也算空行（用户手敲的日记里常有「看不见的空行」），
-// 否则 blankLineGap 会在它旁边再补一个真空行，落盘变成两个空行。
-function trailingNewlines(s: string): number {
-	const m = /(?:\r?\n[ \t]*)*$/.exec(s)
-	return m ? countNewlines(m[0]) : 0
-}
-
-function leadingNewlines(s: string): number {
-	const m = /^(?:[ \t]*\r?\n)*/.exec(s)
-	return m ? countNewlines(m[0]) : 0
+	return normalizeEntryTail(rendered)
 }
 
 /**
- * left 与 right 拼接处要补多少换行，才能让两边的最后 / 第一个非空行之间恰好隔出一个空行。
- * 任一侧为空串 → 不补（文件开头 / 文件末尾没有「前后内容」可言）。
+ * 尾部整理：去掉最后一个非空行末尾的空格 / 制表符，尾部只含空白的行归一成纯换行——
+ * 换行的**个数**原样保留（那是用户表达「后面空几行」的方式）。
  */
-export function blankLineGap(left: string, right: string): string {
-	if (!left || !right) return ''
-	const have = trailingNewlines(left) + leadingNewlines(right)
-	return have >= 2 ? '' : '\n'.repeat(2 - have)
+export function normalizeEntryTail(entry: string): string {
+	const m = /(?:[ \t]*\r?\n)*[ \t]*$/.exec(entry)
+	if (!m) return entry
+	const head = entry.slice(0, m.index).replace(/[ \t]+$/, '')
+	const newlines = (m[0].match(/\n/g) || []).length
+	return head + '\n'.repeat(newlines)
 }
 
-/** 块模式下把同批条目拼起来：条目之间恰好一个空行 */
-export function joinLinkBlocks(entries: string[]): string {
-	return entries.reduce((acc, entry) => acc + blankLineGap(acc, entry) + entry, '')
+// ---------------------------------------------------------------------------
+// 落盘规则：空行由模板自己决定，插件不额外补空行
+//
+// 把渲染结果当成「若干行文本」按文件模型写进日记：
+//   - 每条链接从新的一行开始（落点前面不是行首就补一个换行）；
+//   - 每条链接以**一个**换行结束（模板末尾没写换行就补一个；写了一个就是行尾；
+//     多写的每一个换行都是一个空行——这就是「后面空一行」的写法）；
+//   - 模板开头的空行原样保留——这就是「前面空一行」的写法；
+//   - 落点在行首（顶部 / 底部 / 锚点升序）：后面的内容照旧接着，它开头的空行不动；
+//     落点在某行末尾（锚点降序，紧贴开锚点的 `-->`）：先起一行，落点后那个换行改为
+//     终结最后一条——与旧版单行前缀的逐字节行为一致。
+// ---------------------------------------------------------------------------
+
+/** 保证一条渲染结果以恰好一个「行尾」结束：没有换行就补一个；已有的换行（含多余的空行）原样保留 */
+export function terminateEntry(entry: string): string {
+	return entry.endsWith('\n') ? entry : `${entry}\n`
+}
+
+/**
+ * 把 id 标记挂在渲染结果**最后一个非空行**的末尾——模板末尾的换行 / 空行留在标记后面，
+ * 这样「后面空一行」不会被标记打断，单行模板则与旧版 `- [[…]] <!-- id -->` 同形。
+ */
+export function appendDiaryIdMarker(entry: string, marker: string): string {
+	const m = /(?:\r?\n[ \t]*)*$/.exec(entry)
+	const idx = m ? m.index : entry.length
+	return `${entry.slice(0, idx)} ${marker}${entry.slice(idx)}`
+}
+
+/**
+ * 把同批条目拼成要插进日记的那段文本。
+ * @param entries 已渲染（已挂标记）的条目，按写入顺序
+ * @param content 日记全文
+ * @param at 落点偏移
+ */
+export function layoutDiaryLinkEntries(entries: string[], content: string, at: number): string {
+	let joined = entries.map(terminateEntry).join('')
+	const atLineStart = at === 0 || content[at - 1] === '\n'
+	if (atLineStart) {
+		// 落点在行首：条目都是完整的行，后面的内容照旧接着（它开头的空行是它自己的，不动）
+		return joined
+	}
+	// 落点在某一行的中间 / 末尾（锚点降序：紧贴开锚点那行的 `-->` 之后）：先起一行；
+	// 落点后面那个换行本来是这一行的行尾，现在改为终结最后一条条目，所以条目自己的行尾换行去掉
+	if (content[at] === '\n' && joined.endsWith('\n')) joined = joined.slice(0, -1)
+	return `\n${joined}`
 }
