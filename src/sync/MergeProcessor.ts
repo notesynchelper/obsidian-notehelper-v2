@@ -244,6 +244,13 @@ export class MergeProcessor {
 			const fmMatch = content.match(/^(---\r?\n---)(?:\r?\n+|$)/) || content.match(/^(---\r?\n[\s\S]*?\r?\n---)\n*/)
 			const fmBlock = fmMatch ? fmMatch[0] : ''
 			let body = content.slice(fmBlock.length)
+			// 属性块与正文之间**原有**的空行数（问题 5）：闭合 `---` 行之后、正文第一个非换行
+			// 字符之前的换行数减一（fmBlock 的尾部就是这段换行）。文件原本没有属性块 → 沿用
+			// 历史的一个空行。重写属性块时按这个数补回去，而不是固定 `\n\n` —— 用户合并文件
+			// 模板里 `---` 后紧跟 `# 标题` 时，第一次同步就不会凭空多出一个空行。
+			const fmGapBlankLines = fmMatch
+				? Math.max(0, (fmBlock.slice(fmMatch[1].length).match(/\n/g) ?? []).length - 1)
+				: 1
 
 			// Read syncedIds from latest content for dedup.
 			// ⚠️ 只解析上面抠出来的 fmBlock，**不要**拿整份 content 去解：
@@ -478,7 +485,11 @@ export class MergeProcessor {
 			// （纯消息文件删掉 syncedIds 后就是空对象）；归一成空 frontmatter。
 			let fmYaml = stringifyYaml(updatedFm)
 			if (fmYaml.trim() === '{}') fmYaml = ''
-			const newFmBlock = `---\n${fmYaml}---\n\n`
+			// 属性块 → 正文的空行：保留文件原有间距（fmGapBlankLines，见上）。
+			// 🔴 空属性块例外，固定一个空行：`---\n---\n---\n…` 会让通用 fm 正则把消息模板的
+			// `---` 分隔线吞进 YAML 抛 YAMLException（见上面 fmMatch 处的顺序敏感注释）。
+			const blankLines = fmYaml === '' ? 1 : fmGapBlankLines
+			const newFmBlock = `---\n${fmYaml}---\n${'\n'.repeat(blankLines)}`
 
 			const merged = newFmBlock + body
 			// 写入前 replay 已知 (filePath, url)→localPath 映射，避免合并模式下也把本地化结果覆盖回远程链接
