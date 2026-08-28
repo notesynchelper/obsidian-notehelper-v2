@@ -542,11 +542,13 @@ export class MergeProcessor {
 				// 与 Phase A 渲染用同一份接力后模板，锚点才与文件里的实际标题一致
 				wechatTemplate
 			)
-			this.context.diaryLinkProcessor.addLink(b.item, omnivoreFile.basename, anchor)
+			// 带上合并文件的完整路径：日记文件就是这个合并文件时（用户把消息文件当日记用），
+			// DiaryLinkProcessor 据此跳过指向自己的双链
+			this.context.diaryLinkProcessor.addLink(b.item, omnivoreFile.basename, anchor, omnivoreFile.path)
 		}
 		for (const b of articleItems) {
 			this.context.successTracker.recordSuccess(b.item.id)
-			this.context.diaryLinkProcessor.addLink(b.item, omnivoreFile.basename, undefined)
+			this.context.diaryLinkProcessor.addLink(b.item, omnivoreFile.basename, undefined, omnivoreFile.path)
 		}
 	}
 }

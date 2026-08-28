@@ -34,6 +34,7 @@ const DIARY_ID_MARKER_REGEX = /<!-- notehelper:id:([^\s>]+) -->/g
 interface DiaryLinkItem {
 	item: Item                    // 原始数据
 	targetFile: string            // 目标文件名（不含路径和扩展名）
+	targetPath?: string           // 目标文件完整 vault 路径（判自链接用；没给时退回比文件名）
 	displayTitle: string          // 显示标题
 	anchorHeading?: string        // 锚点标题（仅消息需要）
 	heading: string               // 消息摘要（模板变量 heading；文章为空串）
@@ -58,13 +59,19 @@ interface InsertPlan {
  */
 export interface DiaryLinkResult {
 	success: number       // 成功插入的链接数
-	skipped: number       // 跳过的链接数（日记不存在或无锚点）
+	skipped: number       // 跳过的链接数（日记不存在 / 无锚点 / 自链接）
+	/**
+	 * skipped 里有多少条是「自链接」（日记文件就是链接要指向的合并文件，正文已在里面）。
+	 * 这是预期行为：通知层用它把这部分从 skipped 里扣掉，不弹提示、只记日志。
+	 */
+	selfLinkSkipped: number
 	errors: string[]      // 错误信息列表
 	// 详细的跳过原因统计
 	skipReasons: {
 		fileNotFound: string[]    // 日记文件不存在的日期列表
 		anchorMissing: string[]   // 缺少锚点的日期列表
 		createFailed: string[]    // 自动创建失败的日期列表
+		selfLink: string[]        // 出现自链接跳过的日期列表（预期行为，不提示）
 	}
 }
 
@@ -109,7 +116,9 @@ export class DiaryLinkProcessor {
 	addLink(
 		item: Item,
 		targetFileName: string,
-		anchorHeading?: string
+		anchorHeading?: string,
+		/** 目标文件完整 vault 路径；与解析出的日记文件同路径 = 自链接，写入时跳过 */
+		targetPath?: string,
 	): void {
 		if (!this.settings.enableDiaryLinks) return
 
@@ -136,6 +145,7 @@ export class DiaryLinkProcessor {
 		this.links.push({
 			item,
 			targetFile: targetFileName,
+			targetPath,
 			displayTitle: this.extractDisplayTitle(item),
 			anchorHeading: isMessage ? (anchorHeading || heading) : undefined,
 			heading,
@@ -260,8 +270,9 @@ export class DiaryLinkProcessor {
 		const createEmptyResult = (): DiaryLinkResult => ({
 			success: 0,
 			skipped: 0,
+			selfLinkSkipped: 0,
 			errors: [],
-			skipReasons: { fileNotFound: [], anchorMissing: [], createFailed: [] }
+			skipReasons: { fileNotFound: [], anchorMissing: [], createFailed: [], selfLink: [] }
 		})
 
 		if (!this.settings.enableDiaryLinks || this.links.length === 0) {
@@ -276,10 +287,18 @@ export class DiaryLinkProcessor {
 		for (const [date, links] of linksByDate) {
 			try {
 				const processResult = await this.processDateLinks(date, links)
+				// 自链接（日记文件即合并文件）：计入 skipped，但单独记数，通知层据此不提示
+				if (processResult.selfLinks > 0) {
+					result.skipped += processResult.selfLinks
+					result.selfLinkSkipped += processResult.selfLinks
+					result.skipReasons.selfLink.push(date)
+				}
+				const remaining = links.length - processResult.selfLinks
+				if (remaining === 0) continue
 				if (processResult.success) {
-					result.success += links.length
+					result.success += remaining
 				} else {
-					result.skipped += links.length
+					result.skipped += remaining
 					// 记录跳过原因
 					if (processResult.reason === 'fileNotFound') {
 						result.skipReasons.fileNotFound.push(date)
@@ -320,15 +339,32 @@ export class DiaryLinkProcessor {
 	private async processDateLinks(
 		date: string,
 		links: DiaryLinkItem[]
-	): Promise<{ success: boolean; reason?: 'fileNotFound' | 'anchorMissing' | 'createFailed' }> {
+	): Promise<{
+		success: boolean
+		reason?: 'fileNotFound' | 'anchorMissing' | 'createFailed'
+		/** 这一天里被判成自链接而跳过的条数（不算失败） */
+		selfLinks: number
+	}> {
 		const dateISO = links[0].savedDateISO
 		const resolveResult = await this.resolver.resolve(dateISO)
 
 		if (!resolveResult.file) {
-			return { success: false, reason: resolveResult.reason || 'fileNotFound' }
+			return { success: false, reason: resolveResult.reason || 'fileNotFound', selfLinks: 0 }
 		}
 
 		const diaryFile = resolveResult.file
+
+		// 自链接：日记文件就是链接要指向的那个文件（用户把合并消息文件当日记用，
+		// 消息文件夹 = 日记文件夹、按天一个文件）。正文已经在里面了，再写一条指向
+		// 自己的双链只会让同一条消息出现两遍 → 跳过。这是预期行为，只记日志不算失败。
+		const targets = links.filter((link) => !this.isSelfLink(link, diaryFile))
+		const selfLinks = links.length - targets.length
+		if (selfLinks > 0) {
+			log(`📔 跳过 ${selfLinks} 条指向日记自身的链接（日记文件即消息合并文件）: ${diaryFile.path}`)
+		}
+		if (targets.length === 0) {
+			return { success: true, selfLinks }
+		}
 
 		// 读取日记内容
 		const content = await this.app.vault.read(diaryFile)
@@ -336,7 +372,7 @@ export class DiaryLinkProcessor {
 		// 按写入位置算出落点 + 去重范围 + 批次排序方向
 		const plan = this.buildInsertPlan(content, diaryFile.path)
 		if (!plan) {
-			return { success: false, reason: 'anchorMissing' }
+			return { success: false, reason: 'anchorMissing', selfLinks }
 		}
 
 		const scopeContent = content.slice(plan.scopeStart, plan.scopeEnd)
@@ -356,7 +392,7 @@ export class DiaryLinkProcessor {
 		const noMarkers = this.noDiaryMarkers
 		const newLinks: string[] = []
 		let blockMode = false
-		for (const link of this.sortLinks(links, plan.order)) {
+		for (const link of this.sortLinks(targets, plan.order)) {
 			if (existingIds.has(link.item.id)) continue
 			const entry = this.renderLinkEntry(link)
 			// 串匹配兜底只看裸 [[…]]：旧版前缀形态、无 id 模式、换过模板的历史行都能认出来
@@ -373,7 +409,7 @@ export class DiaryLinkProcessor {
 
 		if (newLinks.length === 0) {
 			log(`📔 所有链接已存在，跳过: ${diaryFile.path}`)
-			return { success: true }
+			return { success: true, selfLinks }
 		}
 
 		const at = plan.insertAt
@@ -399,7 +435,17 @@ export class DiaryLinkProcessor {
 		await this.app.vault.modify(diaryFile, nextContent)
 		log(`📔 已向日记添加 ${newLinks.length} 个链接: ${diaryFile.path}`)
 
-		return { success: true }
+		return { success: true, selfLinks }
+	}
+
+	/**
+	 * 自链接判定：链接要指向的文件就是当前日记文件本身。
+	 * 有完整路径按路径比（同名不同目录不算）；老调用方没给路径时退回比文件名。
+	 */
+	private isSelfLink(link: DiaryLinkItem, diaryFile: TFile): boolean {
+		return link.targetPath !== undefined
+			? link.targetPath === diaryFile.path
+			: link.targetFile === diaryFile.basename
 	}
 
 	/**

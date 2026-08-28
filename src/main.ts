@@ -2125,7 +2125,11 @@ export default class OmnivorePlugin extends Plugin {
    * 提供用户友好的反馈和错误修复指引
    */
   private showDiaryLinkNotice(result: DiaryLinkResult): void {
-    const { success, skipped, errors, skipReasons } = result
+    const { success, errors, skipReasons } = result
+    // 自链接（日记文件就是消息合并文件本身）是预期行为：只在日志里体现，
+    // 从要提示的「跳过」里扣掉，别每次同步都弹「跳过 N 个」吓用户
+    const skipped = result.skipped - result.selfLinkSkipped
+    if (success === 0 && skipped === 0 && errors.length === 0) return
 
     // 全部成功
     if (success > 0 && errors.length === 0 && skipped === 0) {

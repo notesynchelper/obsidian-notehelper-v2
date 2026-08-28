@@ -755,16 +755,17 @@ describe('processBatch - real user data', () => {
     expect(ctx.successTracker.recordSuccess).toHaveBeenCalledWith(REAL.item2.id)
     expect(ctx.successTracker.recordSuccess).toHaveBeenCalledWith(REAL.item3.id)
 
-    // Phase D: diaryLinkProcessor.addLink 调用 3 次，anchor = heading = content 前 10 字
+    // Phase D: diaryLinkProcessor.addLink 调用 3 次，anchor = heading = content 前 10 字，
+    // 第 4 参是合并文件完整路径（日记文件即合并文件时据此跳过自链接）
     expect(ctx.diaryLinkProcessor.addLink).toHaveBeenCalledTimes(3)
     expect(ctx.diaryLinkProcessor.addLink).toHaveBeenCalledWith(
-      expect.objectContaining({ id: REAL.item1.id }), MOCK_FILE.basename, '1'
+      expect.objectContaining({ id: REAL.item1.id }), MOCK_FILE.basename, '1', MOCK_FILE.path
     )
     expect(ctx.diaryLinkProcessor.addLink).toHaveBeenCalledWith(
-      expect.objectContaining({ id: REAL.item2.id }), MOCK_FILE.basename, '2'
+      expect.objectContaining({ id: REAL.item2.id }), MOCK_FILE.basename, '2', MOCK_FILE.path
     )
     expect(ctx.diaryLinkProcessor.addLink).toHaveBeenCalledWith(
-      expect.objectContaining({ id: REAL.item3.id }), MOCK_FILE.basename, '3'
+      expect.objectContaining({ id: REAL.item3.id }), MOCK_FILE.basename, '3', MOCK_FILE.path
     )
   })
 

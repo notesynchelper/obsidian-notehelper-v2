@@ -79,7 +79,7 @@ export class FileProcessor {
 			if (dual) return
 			this.context.successTracker.recordSuccess(item.id)
 			this.recordBurn(item, existingByIndex, content, wf.wrote)
-			this.context.diaryLinkProcessor.addLink(item, existingByIndex.basename, undefined)
+			this.context.diaryLinkProcessor.addLink(item, existingByIndex.basename, undefined, existingByIndex.path)
 			return
 		}
 
@@ -110,9 +110,9 @@ export class FileProcessor {
 		this.recordBurn(item, resultFile, content, writeFlag.wrote)
 
 		// 添加日记链接：优先使用实际落盘文件的 basename，避免 ID 冲突路径下
-		// 写入的链接 target 指向不存在的文件名。
+		// 写入的链接 target 指向不存在的文件名。完整路径供自链接判定（日记文件即目标文件时跳过）。
 		const linkTarget = resultFile ? resultFile.basename : customFilename
-		this.context.diaryLinkProcessor.addLink(item, linkTarget, undefined)
+		this.context.diaryLinkProcessor.addLink(item, linkTarget, undefined, resultFile?.path)
 	}
 
 	/**
