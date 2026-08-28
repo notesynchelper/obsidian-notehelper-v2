@@ -343,6 +343,7 @@ const en = {
         example2: '• {{{content}}} → content only',
         example3: '• 📅 {{{dateSaved}}}\\n{{{content}}} → emoji + time + content',
         example4: '• {{{timeSaved}}}\\n{{{content}}} → time only + content (one-file-per-day journals)',
+        example5: '• - {{{timeSavedShort}}} {{#oneLine}}{{{content}}}{{/oneLine}} → one list item per message (readable by stream-style plugins such as Memos / Thino; oneLine folds a multi-line body into one line)',
         debugLink: 'Debug template online',
         placeholder: '---\\n## 📅 {{{dateSaved}}}\\n{{{content}}}',
         resetTooltip: 'Reset to default template',

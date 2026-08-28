@@ -61,6 +61,7 @@
 - `{{#formatDate}}dateSaved, yyyy-MM-dd{{/formatDate}}` - 自定义日期格式 / Custom date format
 - `{{#mapValue}}取值\|规则表{{/mapValue}}` - 值映射 / Map a value by rules
 - `{{#extract}}取值\|匹配规则\|输出格式{{/extract}}` - 抠取片段 / Extract a part of a value
+- `{{#oneLine}}取值{{/oneLine}}` - 多行折成一行（换行 → `<br>`），流式笔记插件（Memos / Thino）只认单行列表项时用 / Fold a multi-line value into one line
 
 ### mapValue 值映射 / Value mapping
 
@@ -157,6 +158,17 @@ type: {{#mapValue}}{{{siteName}}}|抖音=视频转图文,快手=视频转图文,
 - 未闭合的 `<%` 或 `<%%` 会让 Templater 静默放弃整个模板的渲染，设置页会实时提醒。
 
 ## 💡 使用示例 / Examples
+
+### oneLine 折成一行 / Fold into one line
+
+```
+- {{{timeSavedShort}}} {{#oneLine}}{{{content}}}{{/oneLine}}
+```
+
+把取值里的每一段换行（含空行与两侧空白）换成一个 `<br>`，首尾空白去掉。
+用途：Memos / Thino 这类「流式笔记」插件只把日记里 `- 时:分 正文` 这种**单行**列表项当一条，
+多选转发的聊天记录有多行时只有第一行进得了列表；折成一行后整条都能读到，Thino 会把 `<br>` 还原成换行显示，
+Obsidian 阅读视图也照常换行。真机对照见 `tests/real-obsidian/docs/memos-thino-compat.md`。
 
 ### 文件名示例 / Filename Examples
 

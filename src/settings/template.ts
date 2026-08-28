@@ -527,6 +527,20 @@ function extractFunc() {
  * 模板内置函数表（lowerCase / upperCase / upperCaseFirst / formatDate / mapValue / extract）。
  * 导出给其它 render 入口（助手消息模板、日记链接模板）复用，保证同一套函数在所有模板里可用。
  */
+/**
+ * oneLine：把多行取值折成一行——每一段换行（连同两侧空白、空行）换成一个 `<br>`。
+ * 给「流式笔记」类插件（Memos / Thino）用：它们只认日记里 `- 时:分 正文` 这种**单行**列表项，
+ * 多选转发的聊天记录有多行时只有第一行进得了列表；折成 `<br>` 后整条都在一行里，
+ * Thino 会把 `<br>` 还原成换行显示，Obsidian 阅读视图也照常换行。
+ */
+function oneLineFunc() {
+  return function (text: string, render: (text: string) => string) {
+    return render(text)
+      .trim()
+      .replace(/[ \t]*(?:\r?\n[ \t]*)+/g, '<br>')
+  }
+}
+
 export const functionMap: FunctionMap = {
   lowerCase,
   upperCase,
@@ -534,6 +548,7 @@ export const functionMap: FunctionMap = {
   formatDate: formatDateFunc,
   mapValue: mapValueFunc,
   extract: extractFunc,
+  oneLine: oneLineFunc,
 }
 
 /**

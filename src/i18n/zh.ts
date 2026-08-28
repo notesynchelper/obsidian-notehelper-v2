@@ -330,6 +330,7 @@ const zh: Dict = {
         example2: '• {{{content}}} → 仅显示内容',
         example3: '• 📅 {{{dateSaved}}}\\n{{{content}}} → emoji + 时间 + 内容',
         example4: '• {{{timeSaved}}}\\n{{{content}}} → 只显示时间 + 内容（按天分文件的日记）',
+        example5: '• - {{{timeSavedShort}}} {{#oneLine}}{{{content}}}{{/oneLine}} → 一行一条的列表（Memos / Thino 这类流式笔记能读到；oneLine 把多行正文折成一行）',
         debugLink: '在线调试模板',
         placeholder: '---\\n## 📅 {{{dateSaved}}}\\n{{{content}}}',
         resetTooltip: '重置为默认模板',

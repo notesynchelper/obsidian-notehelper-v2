@@ -1429,6 +1429,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             fragment.createEl('br'),
             t('settings.advanced.assistantTemplate.example4'),
             fragment.createEl('br'),
+            t('settings.advanced.assistantTemplate.example5'),
+            fragment.createEl('br'),
             fragment.createEl('a', {
               text: t('settings.advanced.assistantTemplate.debugLink'),
               href: 'https://obsidian.notebooksyncer.com/template-playground',
