@@ -523,7 +523,11 @@ function extractFunc() {
   }
 }
 
-const functionMap: FunctionMap = {
+/**
+ * 模板内置函数表（lowerCase / upperCase / upperCaseFirst / formatDate / mapValue / extract）。
+ * 导出给其它 render 入口（助手消息模板、日记链接模板）复用，保证同一套函数在所有模板里可用。
+ */
+export const functionMap: FunctionMap = {
   lowerCase,
   upperCase,
   upperCaseFirst,
@@ -553,6 +557,10 @@ export interface DateView {
   dateSaved: string
   datePublished?: string
   dateRead?: string
+  /** 保存时刻的时间部分（本地时区，HH:mm:ss），不受 dateFormat 影响 —— 日记按天分文件时只想要时分秒 */
+  timeSaved: string
+  /** 保存时刻的时间部分（本地时区，HH:mm） */
+  timeSavedShort: string
   yearSaved: string
   monthSaved: string
   daySaved: string
@@ -609,6 +617,8 @@ export function buildDateView(item: Item, dateFormat: string): DateView {
     dateSaved,
     datePublished,
     dateRead,
+    timeSaved: formatDate(item.savedAt, 'HH:mm:ss'),
+    timeSavedShort: formatDate(item.savedAt, 'HH:mm'),
     // savedAt 在 Item 上是必填字段，拆解结果一定有值
     yearSaved: saved.y as string,
     monthSaved: saved.m as string,
