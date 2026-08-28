@@ -195,7 +195,10 @@ export class DiaryLinkProcessor {
 	 * 裸链接同时是「串匹配兜底去重」的比对单位：旧版前缀形态、无 id 模式、
 	 * 换过模板的历史行，只要 [[…]] 这一段相同就算同一条。
 	 */
-	private buildBareLink(linkItem: DiaryLinkItem): { link: string; title: string } {
+	private buildBareLink(
+		linkItem: DiaryLinkItem,
+		diaryPath?: string,
+	): { link: string; title: string; target: string } {
 		const maxLen = this.settings.diaryLinkMaxLength
 
 		let displayTitle = linkItem.displayTitle
@@ -204,10 +207,39 @@ export class DiaryLinkProcessor {
 		}
 		displayTitle = this.sanitizeWikiLinkAlias(displayTitle)
 
+		const target = this.resolveLinkTarget(linkItem, diaryPath)
 		const link = linkItem.isMessage && linkItem.anchorHeading
-			? `[[${linkItem.targetFile}#${linkItem.anchorHeading}|${displayTitle}]]`
-			: `[[${linkItem.targetFile}|${displayTitle}]]`
-		return { link, title: displayTitle }
+			? `[[${target}#${linkItem.anchorHeading}|${displayTitle}]]`
+			: `[[${target}|${displayTitle}]]`
+		return { link, title: displayTitle, target }
+	}
+
+	/**
+	 * 链接目标写什么：让 Obsidian 自己给出「从这本日记出发能唯一定位到目标文件」的最短写法
+	 * （`metadataCache.fileToLinktext`）。日记 `Daily Notes/2026-08-28.md` 与合并文件
+	 * `journals/2026-08-28.md` 同名时，裸 `[[2026-08-28#锚点]]` 会被 Obsidian 解析成日记自己，
+	 * 锚点再对也跳不到消息（真机 E2E 2026-08-28 抓到）；此时得写 `[[journals/2026-08-28#锚点]]`。
+	 * 拿不到 targetPath / 文件 / API（单测 mock、极早期调用）→ 退回文件名，与旧版同形。
+	 */
+	private resolveLinkTarget(linkItem: DiaryLinkItem, diaryPath?: string): string {
+		if (!linkItem.targetPath || diaryPath === undefined) return linkItem.targetFile
+		try {
+			const vault = this.app.vault as unknown as {
+				getAbstractFileByPath?: (p: string) => unknown
+			}
+			const cache = this.app.metadataCache as unknown as {
+				fileToLinktext?: (file: TFile, sourcePath: string, omitMdExtension?: boolean) => string
+			}
+			if (typeof vault.getAbstractFileByPath !== 'function' || typeof cache.fileToLinktext !== 'function') {
+				return linkItem.targetFile
+			}
+			const file = vault.getAbstractFileByPath(linkItem.targetPath)
+			if (!file || typeof (file as { basename?: unknown }).basename !== 'string') return linkItem.targetFile
+			const text = cache.fileToLinktext(file as TFile, diaryPath, true)
+			return text && text.trim() ? text : linkItem.targetFile
+		} catch {
+			return linkItem.targetFile
+		}
 	}
 
 	/**
@@ -217,13 +249,14 @@ export class DiaryLinkProcessor {
 	 */
 	private renderLinkEntry(
 		linkItem: DiaryLinkItem,
+		diaryPath?: string,
 	): { text: string; bareLink: string } {
-		const { link, title } = this.buildBareLink(linkItem)
+		const { link, title, target } = this.buildBareLink(linkItem, diaryPath)
 		const view = buildDiaryLinkView({
 			item: linkItem.item,
 			link,
 			title,
-			target: linkItem.targetFile,
+			target,
 			anchor: linkItem.isMessage ? (linkItem.anchorHeading ?? '') : '',
 			heading: linkItem.heading,
 			isMessage: linkItem.isMessage,
@@ -389,7 +422,7 @@ export class DiaryLinkProcessor {
 		const newLinks: string[] = []
 		for (const link of this.sortLinks(targets, plan.order)) {
 			if (existingIds.has(link.item.id)) continue
-			const entry = this.renderLinkEntry(link)
+			const entry = this.renderLinkEntry(link, diaryFile.path)
 			// 串匹配兜底只看裸 [[…]]：旧版前缀形态、无 id 模式、换过模板的历史行都能认出来
 			if (scopeContent.includes(entry.bareLink)) continue
 			// id 标记挂在渲染结果最后一个非空行的末尾（单行模板 = 与旧版同形；模板末尾的空行留在标记后面）

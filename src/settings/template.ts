@@ -1013,11 +1013,15 @@ export const isWeChatMessage = (item: Item): boolean => {
 export const extractMessagePlainText = (item: Item): string => {
   const content = item.content || ''
   return content
+    // 聊天记录（多选转发）每条内层消息前的加粗时间戳 **yyyy/MM/dd HH:mm:ss**：整段剥掉，
+    // 否则摘要 / 锚点会变成「**2026/08/」这种半截日期（工单 2026-08-28）
+    .replace(/\*\*\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\*\*/g, '')
     .replace(/<[^>]*>/g, '')                                    // 移除 HTML 标签
     .replace(/!\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_m: string, p: string, a: string) => a || p || '')  // ![[path|alt]] → alt or path
     .replace(/\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_m: string, p: string, a: string) => a || p || '')   // [[path|alt]] → alt or path
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                  // ![alt](url) → alt
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                   // [text](url) → text
+    .replace(/\*\*|__|~~|`/g, '')                                // 加粗 / 删除线 / 行内代码只去记号、留文字
     .replace(/\s+/g, ' ')
     .trim()
 }
