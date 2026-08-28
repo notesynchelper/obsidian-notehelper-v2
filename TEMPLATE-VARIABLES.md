@@ -8,6 +8,8 @@
 
 - `{{{dateSaved}}}` - 保存时间（按"文章文件夹日期格式"渲染）/ Saved date (full format)
 - `{{{date}}}` - `{{{dateSaved}}}` 的别名 / alias of dateSaved
+- `{{{timeSaved}}}` - 保存时刻的时间部分（本地时区 `HH:mm:ss`，不受日期格式设置影响；按天分文件的日记只想要时间时用）/ Time of day saved (HH:mm:ss)
+- `{{{timeSavedShort}}}` - 保存时刻的时间部分（`HH:mm`）/ Time of day saved (HH:mm)
 - `{{{yearSaved}}}` - 保存日期的年份（4 位）/ Year of saved date (4-digit)
 - `{{{monthSaved}}}` - 保存日期的月份（2 位补零）/ Month of saved date (2-digit, zero-padded)
 - `{{{daySaved}}}` - 保存日期的日（2 位补零）/ Day of saved date (2-digit, zero-padded)
@@ -207,6 +209,20 @@ Obsidian 阅读视图也照常换行。真机对照见 `tests/real-obsidian/docs
 
 ### 5. 助手消息模板 (Assistant Message Template)
 可在"助手消息模板"设置中使用这些变量来自定义企微消息的显示格式。
+
+可用变量：`{{{content}}}`（消息内容）、`{{{heading}}}`（内容摘要，日记链接锚点用）、
+`{{{title}}}`、`{{{id}}}`、`{{{savedAt}}}`，以及上面的整套保存日期变量
+（`{{{dateSaved}}}` / `{{{date}}}` / `{{{timeSaved}}}` / `{{{timeSavedShort}}}` /
+`{{{yearSaved}}}` …）。**内置函数同样可用**：例如
+`{{#formatDate}}{{dateSaved}},HH:mm{{/formatDate}}` 只显示时分；标题行里用了函数或
+`{{{timeSaved}}}` 时，日记链接的锚点会按同一套规则渲染，与文件里的标题保持一致。
+
+按天分文件的日记场景，只想显示时间 + 内容：
+
+```
+{{{timeSaved}}}
+{{{content}}}
+```
 
 ### 6. 合并文件模板 (Merged File Template)
 可在"合并文件模板"设置中自定义**合并消息文件的文件头**（新建那一刻写进去的：笔记属性 /
