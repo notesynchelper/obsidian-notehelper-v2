@@ -1045,28 +1045,42 @@ const processContentTimestamps = (content: string): string => {
 }
 
 /**
+ * 助手消息模板的 view（正文渲染与锚点渲染共用同一份，锚点才能和文件里的标题对得上）。
+ *
+ * - 消息字段：id / title / content / savedAt / heading（内容摘要，日记链接锚点用）
+ * - 日期变量集：与文章模板同一套 {@link buildDateView}（dateSaved / date /
+ *   timeSaved / timeSavedShort / yearSaved…），dateSaved 语义不变
+ * - 内置函数：{@link functionMap}（formatDate / upperCase / extract…）。历史上这里
+ *   没挂函数表，`{{#formatDate}}…{{/formatDate}}` 被 Mustache 当缺失 section 渲染成空
+ */
+const buildMessageView = (
+  item: Item,
+  dateSavedFormat: string,
+  content: string,
+) => ({
+  id: item.id,
+  title: item.title,
+  content,
+  ...buildDateView(item, dateSavedFormat),
+  savedAt: item.savedAt,
+  heading: generateMessageHeading(item),  // 消息摘要标题
+  ...functionMap,
+})
+
+/**
  * 为企微消息渲染简洁内容（使用用户自定义模板）
- * 可用变量: {{{dateSaved}}}, {{{content}}}, {{{title}}}, {{{id}}}, {{{heading}}} 等
+ * 可用变量: {{{dateSaved}}}, {{{timeSaved}}}, {{{content}}}, {{{title}}}, {{{id}}}, {{{heading}}} 等，
+ * 以及 formatDate 等内置函数（见 buildMessageView）
  */
 export const renderWeChatMessageSimple = (
   item: Item,
   dateSavedFormat: string,
   wechatMessageTemplate: string,
 ): string => {
-  const dateSaved = formatDate(item.savedAt, dateSavedFormat)
   // 处理content中的时间戳，将其弱化显示
   const processedContent = item.content ? processContentTimestamps(item.content) : ''
-  // 生成消息摘要标题（用于日记链接锚点）
-  const heading = generateMessageHeading(item)
 
-  const articleView = {
-    id: item.id,
-    title: item.title,
-    content: processedContent,
-    dateSaved,
-    savedAt: item.savedAt,
-    heading,  // 消息摘要标题
-  }
+  const articleView = buildMessageView(item, dateSavedFormat, processedContent)
   // Templater 掩码：未接力的 <% %> 标签原样保留，防 Mustache 吃掉表达式里的 {{...}}
   const templateMask = maskTemplaterTags(wechatMessageTemplate)
   return templateMask.restore(Mustache.render(templateMask.text, articleView))
@@ -1116,17 +1130,9 @@ export const generateMessageAnchor = (
     return generateMessageHeading(item)
   }
 
-  const dateSaved = formatDate(item.savedAt, dateSavedFormat)
-  const heading = generateMessageHeading(item)
-
-  const articleView = {
-    id: item.id,
-    title: item.title,
-    content: item.content || '',
-    dateSaved,
-    savedAt: item.savedAt,
-    heading,
-  }
+  // 与正文渲染同一份 view（含日期变量集 + 内置函数），标题行里写
+  // {{#formatDate}} / {{{timeSaved}}} 时锚点才与文件里的实际标题一致
+  const articleView = buildMessageView(item, dateSavedFormat, item.content || '')
 
   // Templater 掩码：标题行里未接力的 <% %> 标签原样保留（与正文渲染同一规则，
   // 锚点才能和文件里的实际标题一致）
