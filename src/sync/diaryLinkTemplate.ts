@@ -85,13 +85,15 @@ function countNewlines(s: string): number {
 	return (s.match(/\n/g) || []).length
 }
 
+// 只含空格 / 制表符的行也算空行（用户手敲的日记里常有「看不见的空行」），
+// 否则 blankLineGap 会在它旁边再补一个真空行，落盘变成两个空行。
 function trailingNewlines(s: string): number {
-	const m = /(?:\r?\n)*$/.exec(s)
+	const m = /(?:\r?\n[ \t]*)*$/.exec(s)
 	return m ? countNewlines(m[0]) : 0
 }
 
 function leadingNewlines(s: string): number {
-	const m = /^(?:\r?\n)*/.exec(s)
+	const m = /^(?:[ \t]*\r?\n)*/.exec(s)
 	return m ? countNewlines(m[0]) : 0
 }
 

@@ -532,3 +532,64 @@ describe('前置元数据模板迁移', () => {
     expect(loaded.frontMatterTemplate).toContain('author:')
   })
 })
+
+// =========================================================================
+// codex review 2026-08-28（消息模板 / 日记链接 8 项修复）补的两条恢复路径：
+//  - 升级前的备份只有「双链前缀」没有 diaryLinkTemplate → 恢复时按前缀推导，
+//    否则 smartMerge 用 DEFAULT 补齐会把清空/自定义过的前缀悄悄变回 "- "
+//  - chatRecordTimestampTemplate 是用户手写模板，smartMerge 必须像 wechatMessageTemplate 一样保留
+// =========================================================================
+describe('备份恢复：日记链接模板迁移 + 聊天记录时间样式保留', () => {
+  let manager: ConfigMigrationManager
+
+  beforeEach(() => {
+    manager = new ConfigMigrationManager(createMockApp(), createMockPlugin())
+  })
+
+  function stubLatestBackup(settings: Record<string, unknown>) {
+    jest
+      .spyOn(manager as unknown as { loadVaultBackups: () => Promise<unknown[]> }, 'loadVaultBackups')
+      .mockResolvedValue([{ timestamp: '2026-08-01T00:00:00.000Z', version: '3.2.7', settings }])
+  }
+
+  it('旧备份只有清空过的双链前缀 → 恢复出裸 {{{link}}} 模板，而不是默认 "- {{{link}}}"', async () => {
+    const legacy = { ...createUserSettings(), diaryLinkPrefix: '' } as Record<string, unknown>
+    delete legacy.diaryLinkTemplate
+    stubLatestBackup(legacy)
+
+    const restored = await manager.restoreFromVaultBackup()
+    expect(restored?.diaryLinkTemplate).toBe('{{{link}}}')
+
+    // 整条紧急恢复链路（current 全默认 → performMigration）也要拿到迁移后的模板
+    const merged = await manager.performMigration({ ...DEFAULT_SETTINGS }, '3.2.8')
+    expect(merged.diaryLinkTemplate).toBe('{{{link}}}')
+  })
+
+  it('旧备份是自定义前缀 "* " → 恢复出 "* {{{link}}}"', async () => {
+    const legacy = { ...createUserSettings(), diaryLinkPrefix: '* ' } as Record<string, unknown>
+    delete legacy.diaryLinkTemplate
+    stubLatestBackup(legacy)
+    const restored = await manager.restoreFromVaultBackup()
+    expect(restored?.diaryLinkTemplate).toBe('* {{{link}}}')
+  })
+
+  it('新备份已带 diaryLinkTemplate → 原样恢复，不被前缀覆盖', async () => {
+    stubLatestBackup({ ...createUserSettings(), diaryLinkPrefix: '- ', diaryLinkTemplate: '---\n{{{timeSaved}}}\n{{{link}}}' })
+    const restored = await manager.restoreFromVaultBackup()
+    expect(restored?.diaryLinkTemplate).toBe('---\n{{{timeSaved}}}\n{{{link}}}')
+  })
+
+  it('smartMerge：current 里非默认的 chatRecordTimestampTemplate 优先于过期备份', () => {
+    const current = { ...DEFAULT_SETTINGS, chatRecordTimestampTemplate: '{{{time}}}' }
+    const backup = createUserSettings()  // 备份里是默认值（用户备份后才改的）
+    const merged = manager.smartMergeSettings(current, backup, '3.2.8')
+    expect(merged.chatRecordTimestampTemplate).toBe('{{{time}}}')
+  })
+
+  it('smartMerge：current 默认、备份里是自定义的 chatRecordTimestampTemplate → 保留备份值', () => {
+    const current = { ...DEFAULT_SETTINGS }
+    const backup = createUserSettings({ chatRecordTimestampTemplate: '{{{timeShort}}}' })
+    const merged = manager.smartMergeSettings(current, backup, '3.2.8')
+    expect(merged.chatRecordTimestampTemplate).toBe('{{{timeShort}}}')
+  })
+})

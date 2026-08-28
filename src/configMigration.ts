@@ -1,5 +1,10 @@
 import { App, Notice, Plugin, normalizePath } from 'obsidian'
-import { DEFAULT_SETTINGS, OmnivoreSettings } from './settings'
+import {
+  DEFAULT_SETTINGS,
+  MergeMode,
+  OmnivoreSettings,
+  migrateDiaryLinkTemplate,
+} from './settings'
 import { log, logError } from './logger'
 
 interface BackupData {
@@ -185,7 +190,15 @@ export class ConfigMigrationManager {
       const latestBackup = backups[0]
       if (latestBackup.settings) {
         log('从外部备份恢复配置成功', latestBackup.timestamp)
-        return this.sanitizeSettings(latestBackup.settings)
+        const restored = this.sanitizeSettings(latestBackup.settings)
+        // 升级前的备份只有「双链前缀」没有日记链接模板：在这里按前缀推导，
+        // 否则 smartMerge 用 DEFAULT 补齐后会把用户清空/自定义过的前缀悄悄变回 "- "。
+        // 与 main.ts loadEssentialSettings 主路径同一条迁移规则。
+        const migratedDiaryLinkTemplate = migrateDiaryLinkTemplate(restored)
+        if (migratedDiaryLinkTemplate !== undefined) {
+          restored.diaryLinkTemplate = migratedDiaryLinkTemplate
+        }
+        return restored
       }
     } catch (error) {
       logError('从外部备份恢复配置失败', error)
@@ -219,6 +232,8 @@ export class ConfigMigrationManager {
       'frontMatterTemplate', 'highlightOrder', 'enableHighlightColorRender',
       'highlightManagerId', 'highlightColorMapping', 'singleFileName',
       'wechatMessageTemplate',
+      // 聊天记录时间样式：与助手消息模板同为用户手写模板，迁移 / backup restore 必须保留
+      'chatRecordTimestampTemplate',
       // 以下字段之前遗漏，会导致迁移时被重置为默认值
       'template', 'endpoint', 'filter',
       'dateHighlightedFormat', 'dateSavedFormat',

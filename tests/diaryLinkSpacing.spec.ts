@@ -336,3 +336,27 @@ describe('多行模板 · 用户自带的空行不重复叠加', () => {
 		expect(after).toBe(`${TAG}\n\n${block(10, 'A')}\n\n\n${TAG}\n`)
 	})
 })
+
+// codex review 2026-08-28：只含空格 / 制表符的行也算空行，否则会在它旁边再补一个真空行
+import { blankLineGap, joinLinkBlocks } from '../src/sync/diaryLinkTemplate'
+
+describe('blankLineGap：空白行（只有空格/制表符）算作空行', () => {
+	it('左侧以「\\n  \\n」结尾（看不见的空行）→ 已经隔开，不再补', () => {
+		expect(blankLineGap('正文\n  \n', '---\nx')).toBe('')
+	})
+	it('右侧以「  \\n」开头 → 与左侧的单个换行合起来刚好一个空行', () => {
+		expect(blankLineGap('正文\n', '  \n---')).toBe('')
+	})
+	it('左侧只有一个换行 + 右侧无空行 → 补一个换行（原规则不变）', () => {
+		expect(blankLineGap('正文\n', '---')).toBe('\n')
+	})
+	it('左侧末尾是制表符空行「\\n\\t\\n」→ 不再补', () => {
+		expect(blankLineGap('正文\n\t\n', '---')).toBe('')
+	})
+	it('左侧末尾只有空格没有换行 → 仍补两个换行', () => {
+		expect(blankLineGap('正文  ', '---')).toBe('\n\n')
+	})
+	it('joinLinkBlocks：条目自带的空白尾行不会让条目间多出第二个空行', () => {
+		expect(joinLinkBlocks(['a\n  \n', 'b'])).toBe('a\n  \nb')
+	})
+})
