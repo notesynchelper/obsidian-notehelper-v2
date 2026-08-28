@@ -229,6 +229,8 @@ export class ConfigMigrationManager {
       'imageDownloadRetries', 'imageAttachmentFolder',
       'enableDiaryLinks', 'diaryFolder', 'diaryDateFormat',
       'diaryAnchor', 'diaryLinkType',
+      // 日记链接模板：用户自定义的多行样式，迁移 / backup restore 必须保留
+      'diaryLinkTemplate',
       // 设备级自动同步（注意：deviceAutoSync 是 map，不能整个替换，下方有专门的合并逻辑）
       'deviceAutoSyncMigrated',
     ]

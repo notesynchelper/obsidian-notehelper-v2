@@ -1,21 +1,20 @@
 /**
- * 日记双链「前缀清空」验证
+ * 日记双链「前缀清空」验证 —— 模板时代的版本
  *
- * 用户关切：
+ * 历史用户关切（旧「双链前缀」单行输入框时代）：
  *   1. 每条日记链接默认前面带 "- "（Markdown 列表项 bullet）。
- *   2. 如果在设置里把这个前缀清空，同步落盘的结果里每条链接前面能不能不带 "- "。
- *   3. 设置项那个输入框是否「能真的清空」——会不会被代码静默复位回默认 "- "。
+ *   2. 如果把前缀清空，同步落盘的结果里每条链接前面能不能不带 "- "。
+ *   3. 输入框是否「能真的清空」——会不会被代码静默复位回默认 "- "。
  *
- * 本 spec 直接驱动生产代码 src/sync/DiaryLinkProcessor.ts 的 processAll（不是
- * 重新实现一份 generateWikiLink），断言写进日记文件的真实行首：
- *   - 默认 "- "  → 行首是 "- [["
- *   - 清空 ""    → 行首是 "[["，且整段区域不含 "- [["
- *   - 自定义 "> " → 行首是 "> [["
+ * 「双链前缀」已升级成「日记链接模板」（diaryLinkTemplate，见 diaryLinkTemplate.spec.ts）：
+ *   - 旧默认 "- "  ⇔ 模板 `- {{{link}}}`（DEFAULT）
+ *   - 旧清空 ""    ⇔ 模板 `{{{link}}}`
+ *   - 旧自定义 "> " ⇔ 模板 `> {{{link}}}`
+ *   老数据在加载时按 migrateDiaryLinkTemplate 推导，输出逐字节不变。
  *
- * 另外验证「输入框能真的清空」的数据层：main.ts 的加载合并
- * Object.assign({}, DEFAULT_SETTINGS, loadedData) 与 JSON round-trip 都不会把
- * 用户存的空串复位成默认 "- "。（UI onChange 这一层由 real-obsidian E2E
- * cases/diary-link-prefix-clearable.case.js 真机点穿。）
+ * 本 spec 仍直接驱动生产代码 src/sync/DiaryLinkProcessor.ts 的 processAll，
+ * 断言写进日记文件的真实行首；数据层断言改成「模板语义 + 旧前缀迁移」。
+ * （UI onChange 这一层由 real-obsidian E2E 真机点穿。）
  */
 
 jest.mock('obsidian', () => {
@@ -39,7 +38,12 @@ jest.mock('obsidian', () => {
 })
 
 import { TFile as MockTFileType } from 'obsidian'
-import { DEFAULT_SETTINGS, OmnivoreSettings, DiaryLinkType } from '../src/settings/index'
+import {
+	DEFAULT_SETTINGS,
+	OmnivoreSettings,
+	DiaryLinkType,
+	migrateDiaryLinkTemplate,
+} from '../src/settings/index'
 import { DiaryLinkProcessor } from '../src/sync/DiaryLinkProcessor'
 import type { DailyNoteResolver } from '../src/sync/DailyNoteResolver'
 
@@ -107,7 +111,6 @@ function buildProcessor(
 		...DEFAULT_SETTINGS,
 		enableDiaryLinks: true,
 		diaryAnchor: ANCHOR,
-		diaryLinkPrefix: '- ',
 		diaryLinkMaxLength: 0,
 		diaryLinkType: DiaryLinkType.ALL,
 		...overrides,
@@ -159,12 +162,25 @@ function regionLinkLines(content: string): string[] {
 	return region.split('\n').map(l => l.trim()).filter(l => l.includes('[['))
 }
 
-async function syncOnce(
+/**
+ * 模拟老用户：data.json 里只有 diaryLinkPrefix、没有 diaryLinkTemplate，
+ * 走 main.ts 加载时的同一套迁移，再跑一次同步。
+ */
+async function syncOnceWithLegacyPrefix(
 	prefix: string,
-): Promise<{ lines: string[]; region: string }> {
+): Promise<{ lines: string[]; region: string; template: string }> {
+	const saved: Partial<OmnivoreSettings> = { diaryLinkPrefix: prefix }
+	const loaded = Object.assign({}, DEFAULT_SETTINGS, saved)
+	const migrated = migrateDiaryLinkTemplate(saved)
+	if (migrated !== undefined) loaded.diaryLinkTemplate = migrated
+
 	const diaryFile = new MockTFile(DIARY_PATH)
 	const vault = buildVault({ [DIARY_PATH]: makeDiaryContent('') })
-	const processor = buildProcessor({ diaryLinkPrefix: prefix }, vault, diaryFile)
+	const processor = buildProcessor(
+		{ diaryLinkPrefix: prefix, diaryLinkTemplate: loaded.diaryLinkTemplate },
+		vault,
+		diaryFile,
+	)
 	processor.addLink(baseItem(), 'article-file', undefined)
 	await processor.processAll()
 	const content = vault.files.get(DIARY_PATH)!
@@ -173,20 +189,23 @@ async function syncOnce(
 	return {
 		lines: regionLinkLines(content),
 		region: content.slice(first + ANCHOR_TAG.length, second),
+		template: loaded.diaryLinkTemplate,
 	}
 }
 
-describe('日记链接前缀清空 → 落盘结果', () => {
-	it('默认前缀 "- " → 每条链接行首是 "- [["', async () => {
-		const { lines } = await syncOnce('- ')
+describe('旧「双链前缀」经迁移后的落盘结果（逐字节同旧版）', () => {
+	it('默认前缀 "- " → 模板「- {{{link}}}」→ 每条链接行首是 "- [["', async () => {
+		const { lines, template } = await syncOnceWithLegacyPrefix('- ')
+		expect(template).toBe(DEFAULT_SETTINGS.diaryLinkTemplate)
 		expect(lines.length).toBe(1)
 		expect(lines[0].startsWith('- [[')).toBe(true)
 		// 完整行（含 id 标记注释）
 		expect(lines[0]).toBe('- [[article-file|Some Article Title]] <!-- notehelper:id:item-1 -->')
 	})
 
-	it('清空前缀 "" → 每条链接行首是 "[["，整段不含 "- [["（真的不带 bullet）', async () => {
-		const { lines, region } = await syncOnce('')
+	it('清空前缀 "" → 模板「{{{link}}}」→ 行首是 "[["，整段不含 "- [["（真的不带 bullet）', async () => {
+		const { lines, region, template } = await syncOnceWithLegacyPrefix('')
+		expect(template).toBe('{{{link}}}')
 		expect(lines.length).toBe(1)
 		expect(lines[0].startsWith('[[')).toBe(true)
 		expect(lines[0].startsWith('- ')).toBe(false)
@@ -194,33 +213,41 @@ describe('日记链接前缀清空 → 落盘结果', () => {
 		expect(lines[0]).toBe('[[article-file|Some Article Title]] <!-- notehelper:id:item-1 -->')
 	})
 
-	it('自定义前缀 "> " → 行首原样使用 "> [["', async () => {
-		const { lines } = await syncOnce('> ')
+	it('自定义前缀 "> " → 模板「> {{{link}}}」→ 行首原样 "> [["', async () => {
+		const { lines, template } = await syncOnceWithLegacyPrefix('> ')
+		expect(template).toBe('> {{{link}}}')
 		expect(lines[0].startsWith('> [[')).toBe(true)
 	})
 
 	it('前缀不自动补空格："-"（无空格）→ 行首 "-[["', async () => {
-		const { lines } = await syncOnce('-')
+		const { lines } = await syncOnceWithLegacyPrefix('-')
 		expect(lines[0].startsWith('-[[')).toBe(true)
 	})
 })
 
-describe('「输入框能真的清空」——数据层不会把空串复位成默认', () => {
-	it('DEFAULT_SETTINGS.diaryLinkPrefix 默认就是 "- "', () => {
+describe('「输入框能真的清空」——数据层不会把用户值复位成默认', () => {
+	it('DEFAULT_SETTINGS：旧字段 diaryLinkPrefix 仍是 "- "，新字段 diaryLinkTemplate 是「- {{{link}}}」', () => {
 		expect(DEFAULT_SETTINGS.diaryLinkPrefix).toBe('- ')
+		expect(DEFAULT_SETTINGS.diaryLinkTemplate).toBe('- {{{link}}}')
 	})
 
-	it('加载合并 Object.assign({}, DEFAULT_SETTINGS, loadedData) 保留用户存的空串', () => {
-		// 模拟：用户清空输入框后 data.json 里写下的 diaryLinkPrefix: ""
+	it('加载合并 Object.assign({}, DEFAULT_SETTINGS, loadedData) 保留用户存的模板（含裸 {{{link}}}）', () => {
+		const savedData = { diaryLinkTemplate: '{{{link}}}' }
+		const loaded = Object.assign({}, DEFAULT_SETTINGS, savedData)
+		expect(loaded.diaryLinkTemplate).toBe('{{{link}}}') // 未被复位成默认
+	})
+
+	it('老数据里的空前缀 "" 不会被 Object.assign 复位，迁移后仍推导出裸 {{{link}}}', () => {
 		const savedData = { diaryLinkPrefix: '' }
 		const loaded = Object.assign({}, DEFAULT_SETTINGS, savedData)
-		expect(loaded.diaryLinkPrefix).toBe('') // 空串覆盖默认，未被复位
+		expect(loaded.diaryLinkPrefix).toBe('')
+		expect(migrateDiaryLinkTemplate(savedData)).toBe('{{{link}}}')
 	})
 
-	it('saveData/loadData 的 JSON round-trip 保留空串（不被丢弃成 undefined→默认）', () => {
-		const loaded = Object.assign({}, DEFAULT_SETTINGS, { diaryLinkPrefix: '' })
+	it('saveData/loadData 的 JSON round-trip 保留模板原文（换行 / 空白都不丢）', () => {
+		const loaded = Object.assign({}, DEFAULT_SETTINGS, { diaryLinkTemplate: '---\n{{{timeSaved}}}\n{{{link}}}' })
 		const roundTripped = JSON.parse(JSON.stringify(loaded))
-		expect(Object.prototype.hasOwnProperty.call(roundTripped, 'diaryLinkPrefix')).toBe(true)
-		expect(roundTripped.diaryLinkPrefix).toBe('')
+		expect(Object.prototype.hasOwnProperty.call(roundTripped, 'diaryLinkTemplate')).toBe(true)
+		expect(roundTripped.diaryLinkTemplate).toBe('---\n{{{timeSaved}}}\n{{{link}}}')
 	})
 })

@@ -316,3 +316,13 @@ VIP Status Display
 .notehelper-inline-preview.mod-warning {
 	color: var(--text-error);
 }
+
+/* 日记链接模板的实时预览：模板可以多行，预览按原样换行；模板坏了变红字。 */
+.notehelper-diary-link-template-preview {
+	white-space: pre-wrap;
+	color: var(--text-muted);
+}
+
+.notehelper-diary-link-template-preview.mod-warning {
+	color: var(--text-error);
+}

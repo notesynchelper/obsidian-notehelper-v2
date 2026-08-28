@@ -27,6 +27,12 @@ import { analyzeTemplaterTags } from './sync/templaterRelay'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
 import { validateFrontMatterTemplate } from './settings/template'
 import { validateMergeFileTemplate } from './sync/mergeFileTemplate'
+import {
+  buildDiaryLinkView,
+  renderDiaryLinkTemplate,
+  resolveDiaryLinkTemplate,
+} from './sync/diaryLinkTemplate'
+import type { Item } from '@omnivore-app/api'
 import { getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh } from './api'
 import { VIP_QR_DATA_URI } from './assets/vipQrImage'
 import { log, logError, Logger } from './logger'
@@ -1866,7 +1872,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
               this.display() // 切换后重渲染：锚点相关的两行跟着显示/隐藏
             }),
         )
-      // 稳定选择器：real-obsidian e2e 用它定位这一行
+      // 稳定选择器：E2E 用它定位这一行
       writePositionSetting.settingEl.addClass('notehelper-diary-write-position-row')
 
       if (this.plugin.settings.diaryWritePosition === DiaryWritePosition.ANCHOR) {
@@ -1926,31 +1932,103 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             }),
         )
 
-      new Setting(diaryBody)
-        .setName(t('settings.diary.linkPrefix.name'))
-        .setDesc(t('settings.diary.linkPrefix.desc'))
-        .addText((text) => {
-          const previewContainer = diaryBody.createDiv({
-            cls: 'setting-item-description notehelper-inline-preview',
-          })
+      // 日记链接模板：取代旧「双链前缀」单行输入框（旧值已在加载时迁移成 `${前缀}{{{link}}}`）。
+      // 多行文本框 + 变量清单 + 实时预览 + 恢复默认；留空 = 恢复默认。
+      const linkTemplateSetting = new Setting(diaryBody)
+        .setName(t('settings.diary.linkTemplate.name'))
+        .setDesc(
+          createFragment((fragment) => {
+            const variable = (code: string, desc: string) => {
+              fragment.append(fragment.createEl('code', { text: code }), ' ', desc, fragment.createEl('br'))
+            }
+            fragment.append(t('settings.diary.linkTemplate.descMain'), fragment.createEl('br'), fragment.createEl('br'))
+            fragment.append(t('settings.diary.linkTemplate.variablesIntro'), fragment.createEl('br'))
+            variable('{{{link}}}', t('settings.diary.linkTemplate.varLink'))
+            variable('{{{title}}}', t('settings.diary.linkTemplate.varTitle'))
+            variable('{{{target}}}', t('settings.diary.linkTemplate.varTarget'))
+            variable('{{{anchor}}}', t('settings.diary.linkTemplate.varAnchor'))
+            variable('{{{heading}}}', t('settings.diary.linkTemplate.varHeading'))
+            variable('{{{dateSaved}}}', t('settings.diary.linkTemplate.varDateSaved'))
+            variable('{{{timeSaved}}}', t('settings.diary.linkTemplate.varTimeSaved'))
+            variable('{{{timeSavedShort}}}', t('settings.diary.linkTemplate.varTimeSavedShort'))
+            variable('{{#isMessage}}…{{/isMessage}}', t('settings.diary.linkTemplate.varIsMessage'))
+            fragment.append(t('settings.diary.linkTemplate.functionsNote'), fragment.createEl('br'), fragment.createEl('br'))
+            fragment.append(t('settings.diary.linkTemplate.examplesIntro'), fragment.createEl('br'))
+            variable('- {{{link}}}', t('settings.diary.linkTemplate.example1'))
+            fragment.append(
+              t('settings.diary.linkTemplate.example2'),
+              fragment.createEl('br'),
+              fragment.createEl('code', { text: '---' }),
+              fragment.createEl('br'),
+              fragment.createEl('code', { text: '{{{timeSaved}}}' }),
+              fragment.createEl('br'),
+              fragment.createEl('code', { text: '{{{link}}}' }),
+            )
+          }),
+        )
+      // 稳定选择器：E2E 用它定位这一行
+      linkTemplateSetting.settingEl.addClass('notehelper-diary-link-template-row')
 
-          const updatePrefixPreview = (prefix: string) => {
-            const sampleTitle = t('settings.diary.linkPrefix.sampleTitle')
-            const sample = `${prefix}[[${sampleTitle}|${sampleTitle}]]`
-            previewContainer.setText(`${t('settings.diary.linkPrefix.previewLabel')}: ${sample}`)
-          }
+      // 预览跟在设置行下面，用示例标题 + 当前时间渲染一次真实模板
+      const linkTemplatePreviewEl = diaryBody.createDiv({
+        cls: 'setting-item-description notehelper-diary-link-template-preview',
+      })
+      const updateLinkTemplatePreview = (template: string) => {
+        const sampleTitle = t('settings.diary.linkTemplate.sampleTitle')
+        const sampleItem = { savedAt: new Date().toISOString(), title: sampleTitle } as unknown as Item
+        try {
+          const rendered = renderDiaryLinkTemplate(
+            resolveDiaryLinkTemplate(template),
+            buildDiaryLinkView({
+              item: sampleItem,
+              link: `[[${sampleTitle}|${sampleTitle}]]`,
+              title: sampleTitle,
+              target: sampleTitle,
+              anchor: '',
+              heading: '',
+              isMessage: false,
+              dateSavedFormat: this.plugin.settings.dateSavedFormat,
+            }),
+          )
+          linkTemplatePreviewEl.setText(`${t('settings.diary.linkTemplate.previewLabel')}:\n${rendered}`)
+          linkTemplatePreviewEl.removeClass('mod-warning')
+        } catch (e) {
+          linkTemplatePreviewEl.setText(
+            `⚠️ ${t('settings.diary.linkTemplate.previewError')}: ${e instanceof Error ? e.message : String(e)}`,
+          )
+          linkTemplatePreviewEl.addClass('mod-warning')
+        }
+      }
 
+      linkTemplateSetting
+        .addTextArea((text) => {
           text
-            .setPlaceholder(t('settings.diary.linkPrefix.placeholder'))
-            .setValue(this.plugin.settings.diaryLinkPrefix)
+            .setPlaceholder(t('settings.diary.linkTemplate.placeholder'))
+            .setValue(this.plugin.settings.diaryLinkTemplate)
             .onChange(async (value) => {
-              this.plugin.settings.diaryLinkPrefix = value
+              if (!validateTemplate(value, '日记链接模板', { allowTemplaterTags: true })) return
+              // 留空 = 恢复默认（与文章模板一致）
+              this.plugin.settings.diaryLinkTemplate = value
+                ? value
+                : DEFAULT_SETTINGS.diaryLinkTemplate
               await this.plugin.saveSettings(true)
-              updatePrefixPreview(value)
+              updateLinkTemplatePreview(this.plugin.settings.diaryLinkTemplate)
             })
-
-          updatePrefixPreview(this.plugin.settings.diaryLinkPrefix)
+          text.inputEl.setAttr('rows', 4)
+          text.inputEl.setAttr('cols', 30)
         })
+        .addExtraButton((button) => {
+          button
+            .setIcon('reset')
+            .setTooltip(t('settings.diary.linkTemplate.resetTooltip'))
+            .onClick(async () => {
+              this.plugin.settings.diaryLinkTemplate = DEFAULT_SETTINGS.diaryLinkTemplate
+              await this.plugin.saveSettings(true)
+              this.display()
+              new Notice(t('settings.diary.linkTemplate.noticeReset'))
+            })
+        })
+      updateLinkTemplatePreview(this.plugin.settings.diaryLinkTemplate)
 
       new Setting(diaryBody)
         .setName(t('settings.diary.linkMaxLength.name'))

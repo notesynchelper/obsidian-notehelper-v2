@@ -12,7 +12,7 @@ import {
 } from 'obsidian'
 import { getItems, deleteArticleById } from './api'
 import { log, logError, Logger } from './logger'
-import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage } from './settings'
+import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage, migrateDiaryLinkTemplate } from './settings'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
 import { setForcedLang, t } from './i18n'
 import {
@@ -100,6 +100,8 @@ export default class OmnivorePlugin extends Plugin {
   private imageResumeTimeout: number | null = null
   private firstSyncNoticeTimeout: number | null = null
   private syncing: boolean = false
+  // 日记链接模板本次启动是否由旧「双链前缀」推导而来：加载时只改内存，落盘交给 processSettingsCompatibility
+  private diaryLinkTemplateMigrated = false
   private debouncedSaveSettings: () => void
   configMigrationManager: ConfigMigrationManager
   imageLocalizer: ImageLocalizer | null = null
@@ -297,6 +299,16 @@ export default class OmnivorePlugin extends Plugin {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData ?? {})
         // 🔧 关键修复：确保 this.settings 不包含 config-backup，防止递归嵌套导致文件膨胀
         delete (this.settings as unknown as Record<string, unknown>)['config-backup']
+        // 日记链接模板迁移：老数据只有「双链前缀」，按前缀推导模板，日记落盘逐字节不变。
+        // 只能在这里判断（还拿得到原始 loadedData 有没有这个键），落盘交给 processSettingsCompatibility 做一次。
+        const migratedDiaryLinkTemplate = migrateDiaryLinkTemplate(loadedData)
+        if (
+          migratedDiaryLinkTemplate !== undefined &&
+          migratedDiaryLinkTemplate !== this.settings.diaryLinkTemplate
+        ) {
+          this.settings.diaryLinkTemplate = migratedDiaryLinkTemplate
+          this.diaryLinkTemplateMigrated = true
+        }
       }
       // 老用户 data.json 可能保存了 100；必须在任何本地化器读取前收敛到运行时硬上限。
       this.settings.imageDownloadRetries = clampImageDownloadRetries(
@@ -706,6 +718,12 @@ export default class OmnivorePlugin extends Plugin {
         log(`图片设置已迁移: ${oldValue} -> ${this.settings.imageMode}`)
       }
 
+      // 日记链接模板：加载阶段已按旧「双链前缀」推导进内存，这里落盘一次，以后不再依赖前缀字段
+      if (this.diaryLinkTemplateMigrated) {
+        this.diaryLinkTemplateMigrated = false
+        needsSave = true
+        log(`日记链接模板已按旧「双链前缀」迁移: ${JSON.stringify(this.settings.diaryLinkTemplate)}`)
+      }
 
       if (needsSave) {
         // 兼容性迁移只在升级首次触发，立即落盘避免 60s 防抖窗口内用户关闭 Obsidian 导致迁移丢失

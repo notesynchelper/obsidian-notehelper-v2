@@ -133,6 +133,13 @@ export const OLD_DEFAULT_FRONT_MATTER_TEMPLATE =
 export const PREV_DEFAULT_FRONT_MATTER_TEMPLATE =
   'author: {{{author}}}\nsource: {{{siteName}}}\nurl: {{{originalUrl}}}\nsaved: {{{dateSaved}}}\ntags: [笔记同步助手]{{#labels}}[{{{name}}}]{{/labels}}'
 
+/**
+ * 日记链接模板默认值 = 旧版默认「双链前缀 "- "」+ 链接，落盘逐字节同输出。
+ * 常量放在 settings 里（而不是 sync/diaryLinkTemplate.ts）是为了避免
+ * settings → sync → settings/template → settings 的循环引用。
+ */
+export const DEFAULT_DIARY_LINK_TEMPLATE = '- {{{link}}}'
+
 export const DEFAULT_SETTINGS: OmnivoreSettings = {
   dateHighlightedFormat: 'yyyy-MM-dd HH:mm:ss',
   dateSavedFormat: 'yyyy-MM-dd HH:mm:ss',
@@ -189,7 +196,8 @@ export const DEFAULT_SETTINGS: OmnivoreSettings = {
   diaryLinkOrder: DiaryLinkOrder.DESC,  // 锚点区域内写入顺序：默认时间降序（新的在前，历史行为）
   diaryLinkType: DiaryLinkType.ALL,     // 链接类型
   autoCreateDiaryNote: false,            // 自动创建日记文件
-  diaryLinkPrefix: '- ',                 // 双链前缀
+  diaryLinkPrefix: '- ',                 // 双链前缀（旧字段：只用于迁移到 diaryLinkTemplate，设置页不再展示）
+  diaryLinkTemplate: DEFAULT_DIARY_LINK_TEMPLATE,  // 日记链接模板（默认 = 旧「前缀 "- " + 链接」，逐字节同输出）
   diaryLinkMaxLength: 0,                 // 双链显示文字最大字符数（0=不限制）
   // 设备级同步游标
   deviceSyncCursors: {},                 // 各设备独立的同步时间戳
@@ -272,7 +280,8 @@ export interface OmnivoreSettings {
   diaryLinkOrder: DiaryLinkOrder      // 批次写入顺序（仅锚点位置可选）
   diaryLinkType: DiaryLinkType        // 链接类型
   autoCreateDiaryNote: boolean          // 自动创建日记文件
-  diaryLinkPrefix: string               // 双链前缀
+  diaryLinkPrefix: string               // 双链前缀（旧字段，仅供迁移；渲染只看 diaryLinkTemplate）
+  diaryLinkTemplate: string             // 日记链接模板（每条链接按它渲染，可多行；空串按默认）
   diaryLinkMaxLength: number            // 双链显示文字最大字符数（0=不限制）
   // 设备级同步游标
   deviceSyncCursors: Record<string, string>  // 各设备独立的同步时间戳
@@ -323,4 +332,24 @@ export interface PendingBurnDelete {
   originalAttachmentUrls: string[] // 本地化前的原始远程附件 URL（任何模式都复查）
   reason: string                 // 'delete-failed' | 'localization-pending'
   lastTriedAt: string            // 上次尝试时间 ISO
+}
+
+/**
+ * 日记链接模板迁移：旧版只有「双链前缀」(diaryLinkPrefix)，没有 diaryLinkTemplate。
+ * 保存数据里**没有** diaryLinkTemplate 这个键 → 按前缀推导 `${前缀}{{{link}}}`，
+ * 落盘输出与旧版逐字节一致（前缀清空过的用户得到裸 `{{{link}}}`）。
+ *
+ * @returns 推导出的模板；undefined = 无需迁移（首次安装没有存档，或已存过模板键——
+ *          哪怕存的是空串也尊重用户，空串在渲染时按默认处理）
+ */
+export function migrateDiaryLinkTemplate(
+  loaded: Partial<OmnivoreSettings> | null | undefined,
+): string | undefined {
+  if (!loaded) return undefined
+  if (Object.prototype.hasOwnProperty.call(loaded, 'diaryLinkTemplate')) return undefined
+  const prefix =
+    typeof loaded.diaryLinkPrefix === 'string'
+      ? loaded.diaryLinkPrefix
+      : DEFAULT_SETTINGS.diaryLinkPrefix
+  return `${prefix}{{{link}}}`
 }

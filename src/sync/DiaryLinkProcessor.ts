@@ -1,11 +1,22 @@
 import { Item } from '@omnivore-app/api'
-import { App } from 'obsidian'
+import { App, TFile } from 'obsidian'
 import { truncateWithOmission } from '../util'
-import { OmnivoreSettings, DiaryLinkType, DiaryWritePosition, DiaryLinkOrder } from '../settings'
+import {
+  OmnivoreSettings,
+  DiaryLinkType,
+  DiaryWritePosition,
+  DiaryLinkOrder,
+  DEFAULT_DIARY_LINK_TEMPLATE,
+} from '../settings'
 import { DailyNoteResolver } from './DailyNoteResolver'
 import { latestSyncCursor, isCursorCovered } from './cursorDedupe'
 import { log, logError } from '../logger'
 import { isWeChatMessage, generateMessageHeading, extractMessagePlainText } from '../settings/template'
+import {
+	buildDiaryLinkView,
+	renderDiaryLinkTemplate,
+	resolveDiaryLinkTemplate,
+} from './diaryLinkTemplate'
 
 /**
  * 区域内按 item.id 去重用的 HTML 注释标记。
@@ -22,6 +33,7 @@ interface DiaryLinkItem {
 	targetFile: string            // 目标文件名（不含路径和扩展名）
 	displayTitle: string          // 显示标题
 	anchorHeading?: string        // 锚点标题（仅消息需要）
+	heading: string               // 消息摘要（模板变量 heading；文章为空串）
 	savedDateISO: string          // 保存日期ISO时间戳（用于分发到对应日记）
 	isMessage: boolean            // 是否为企微消息
 }
@@ -63,6 +75,8 @@ export interface DiaryLinkResult {
  */
 export class DiaryLinkProcessor {
 	private links: DiaryLinkItem[] = []
+	/** 本轮是否已经报过「模板渲染失败」——同一批几十条链接只报一次，不刷屏 */
+	private templateFailureLogged = false
 
 	constructor(
 		private app: App,
@@ -113,11 +127,15 @@ export class DiaryLinkProcessor {
 			return
 		}
 
+		// 消息摘要既是锚点的缺省值，也是模板变量 heading；文章没有摘要
+		const heading = isMessage ? generateMessageHeading(item) : ''
+
 		this.links.push({
 			item,
 			targetFile: targetFileName,
 			displayTitle: this.extractDisplayTitle(item),
-			anchorHeading: isMessage ? (anchorHeading || generateMessageHeading(item)) : undefined,
+			anchorHeading: isMessage ? (anchorHeading || heading) : undefined,
+			heading,
 			savedDateISO: item.savedAt,
 			isMessage
 		})
@@ -129,7 +147,7 @@ export class DiaryLinkProcessor {
 	private extractDisplayTitle(item: Item): string {
 		if (isWeChatMessage(item)) {
 			// 企微消息：使用清洗后的完整正文作为显示标题候选，
-			// 由 generateWikiLink 里的 diaryLinkMaxLength 统一决定是否截断。
+			// 由 buildBareLink 里的 diaryLinkMaxLength 统一决定是否截断。
 			// 不在此处先行 slice，避免用户设置 > 10 时被预截拦截而"看起来没生效"。
 			return extractMessagePlainText(item) || '消息'
 		}
@@ -161,10 +179,11 @@ export class DiaryLinkProcessor {
 	}
 
 	/**
-	 * 生成 wikilink
+	 * 生成裸 wikilink（不含任何前缀 / 模板装饰）+ 截断清洗后的显示文字。
+	 * 裸链接同时是「串匹配兜底去重」的比对单位：旧版前缀形态、无 id 模式、
+	 * 换过模板的历史行，只要 [[…]] 这一段相同就算同一条。
 	 */
-	private generateWikiLink(linkItem: DiaryLinkItem): string {
-		const prefix = this.settings.diaryLinkPrefix
+	private buildBareLink(linkItem: DiaryLinkItem): { link: string; title: string } {
 		const maxLen = this.settings.diaryLinkMaxLength
 
 		let displayTitle = linkItem.displayTitle
@@ -173,10 +192,55 @@ export class DiaryLinkProcessor {
 		}
 		displayTitle = this.sanitizeWikiLinkAlias(displayTitle)
 
-		if (linkItem.isMessage && linkItem.anchorHeading) {
-			return `${prefix}[[${linkItem.targetFile}#${linkItem.anchorHeading}|${displayTitle}]]`
+		const link = linkItem.isMessage && linkItem.anchorHeading
+			? `[[${linkItem.targetFile}#${linkItem.anchorHeading}|${displayTitle}]]`
+			: `[[${linkItem.targetFile}|${displayTitle}]]`
+		return { link, title: displayTitle }
+	}
+
+	/**
+	 * 按「日记链接模板」渲染一条。
+	 * 模板坏了（语法错误 / 渲染抛错 / 渲染成空）→ 记一次错误并回落默认模板，
+	 * 绝不让整批链接丢。
+	 */
+	private renderLinkEntry(linkItem: DiaryLinkItem): { text: string; bareLink: string } {
+		const { link, title } = this.buildBareLink(linkItem)
+		const view = buildDiaryLinkView({
+			item: linkItem.item,
+			link,
+			title,
+			target: linkItem.targetFile,
+			anchor: linkItem.isMessage ? (linkItem.anchorHeading ?? '') : '',
+			heading: linkItem.heading,
+			isMessage: linkItem.isMessage,
+			dateSavedFormat: this.settings.dateSavedFormat,
+		})
+		const template = resolveDiaryLinkTemplate(this.settings.diaryLinkTemplate)
+
+		let text: string | null = null
+		try {
+			const rendered = renderDiaryLinkTemplate(template, view)
+			if (rendered) {
+				text = rendered
+			} else {
+				this.reportTemplateFailure(new Error('模板渲染结果为空'))
+			}
+		} catch (error) {
+			this.reportTemplateFailure(error)
 		}
-		return `${prefix}[[${linkItem.targetFile}|${displayTitle}]]`
+		if (text === null) {
+			text = renderDiaryLinkTemplate(DEFAULT_DIARY_LINK_TEMPLATE, view)
+		}
+		return { text, bareLink: link }
+	}
+
+	private reportTemplateFailure(error: unknown): void {
+		if (this.templateFailureLogged) return
+		this.templateFailureLogged = true
+		logError(
+			`📔 日记链接模板渲染失败，本轮回落默认模板「${DEFAULT_DIARY_LINK_TEMPLATE}」，请检查设置里的「日记链接模板」`,
+			error,
+		)
 	}
 
 	/**
@@ -285,12 +349,14 @@ export class DiaryLinkProcessor {
 		const newLinks: string[] = []
 		for (const link of this.sortLinks(links, plan.order)) {
 			if (existingIds.has(link.item.id)) continue
-			const wikiLink = this.generateWikiLink(link)
-			if (scopeContent.includes(wikiLink)) continue
+			const entry = this.renderLinkEntry(link)
+			// 串匹配兜底只看裸 [[…]]：旧版前缀形态、无 id 模式、换过模板的历史行都能认出来
+			if (scopeContent.includes(entry.bareLink)) continue
+			// id 标记挂在渲染结果最后一行末尾（单行模板 = 与旧版同形）
 			newLinks.push(
 				noMarkers
-					? wikiLink
-					: `${wikiLink} <!-- ${DIARY_ID_MARKER_PREFIX}${link.item.id} -->`,
+					? entry.text
+					: `${entry.text} <!-- ${DIARY_ID_MARKER_PREFIX}${link.item.id} -->`,
 			)
 			existingIds.add(link.item.id)
 		}
@@ -411,6 +477,7 @@ export class DiaryLinkProcessor {
 	 */
 	reset(): void {
 		this.links = []
+		this.templateFailureLogged = false
 	}
 
 	/**

@@ -99,7 +99,11 @@ function makeArticleItem(title: string): any {
   }
 }
 
-/** 取出真实 DiaryLinkProcessor 内部生成的 wikilink 字符串 */
+/**
+ * 取出真实 DiaryLinkProcessor 内部生成的裸 wikilink 字符串。
+ * （「双链前缀」升级成「日记链接模板」后，截断 + 清洗都在 buildBareLink 里，
+ *   模板只负责在裸链接外面套样式，与本组关注的 alias 长度无关。）
+ */
 function generateWikiLinkForItem(
   processor: DiaryLinkProcessor,
   item: any,
@@ -109,7 +113,7 @@ function generateWikiLinkForItem(
   processor.addLink(item, targetFile, anchor)
   const links = (processor as any).links as Array<any>
   const linkItem = links[links.length - 1]
-  return (processor as any).generateWikiLink(linkItem) as string
+  return ((processor as any).buildBareLink(linkItem) as { link: string }).link
 }
 
 /** 从 `[[target|display]]` 或 `[[target#anchor|display]]` 中取出 `|` 之后的部分 */
