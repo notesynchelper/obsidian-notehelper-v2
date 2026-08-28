@@ -854,7 +854,11 @@ export default class OmnivorePlugin extends Plugin {
 
       if (imageModeEnabled && this.imageLocalizer) {
         this.imageLocalizer.clearProcessedMark(file.path)
-        const enqueueResult = await this.imageLocalizer.enqueueFile(file, meta)
+        // 用户显式右键 = 明确的"再试一次"：把死图（404/410）的有界预算清零，
+        // 图床补回来了就能当场自愈。同步侧的自动入队【不】传这个标志。
+        const enqueueResult = await this.imageLocalizer.enqueueFile(file, meta, {
+          resetNotFoundBudget: true,
+        })
         const result = await this.imageLocalizer.processQueue()
         if (
           enqueueResult === 'read-failed' ||
@@ -946,7 +950,10 @@ export default class OmnivorePlugin extends Plugin {
       if (imageModeEnabled && this.imageLocalizer) {
         for (const { file, meta } of entries) {
           this.imageLocalizer.clearProcessedMark(file.path)
-          const enqueueResult = await this.imageLocalizer.enqueueFile(file, meta)
+          // 同上：用户显式动作，死图预算清零。
+          const enqueueResult = await this.imageLocalizer.enqueueFile(file, meta, {
+            resetNotFoundBudget: true,
+          })
           if (enqueueResult === 'read-failed') failedPaths.add(file.path)
         }
         const result = await this.imageLocalizer.processQueue()

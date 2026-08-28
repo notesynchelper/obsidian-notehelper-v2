@@ -98,6 +98,10 @@ export class ImageLocalizer {
   // 每轮 drain 开始时清空 —— 绝不跨轮沿用，否则「图床暂时 404、稍后就绪」的图
   // 会在预算耗尽前再也得不到一次真实验证。
   private roundNotFoundUrls = new Set<string>()
+  // 当前是否处在 drainQueue 里。drain 外直接调用 public localizeFile 属于一次
+  // 【独立】的本地化，必须自带干净的死图名单，不能沿用上一轮 drain 的判定
+  // 结果（否则源站已经恢复了也会被跳过，codex 应修#3）。
+  private inDrain = false
 
   constructor(
     app: App,
@@ -433,6 +437,8 @@ export class ImageLocalizer {
     const task: LocalizeTask | { file: TFile; meta?: LocalizerItemMeta } =
       fileOrTask instanceof TFile ? { file: fileOrTask } : fileOrTask
     const { file, meta } = task
+    // drain 外的独立调用自带干净名单；drain 内共享同一轮名单（同一张死图一轮只验证一次）。
+    if (!this.inDrain) this.roundNotFoundUrls.clear()
     try {
       log(`开始本地化图片: ${file.path}`)
 
@@ -753,10 +759,15 @@ export class ImageLocalizer {
   async enqueueFile(
     file: TFile,
     metaOrSavedAt?: LocalizerItemMeta | string,
+    opts?: { resetNotFoundBudget?: boolean },
   ): Promise<ImageEnqueueResult> {
-    // 显式入队（同步写完 / 用户右键重新本地化）一律给全新预算：退休过的死图
-    // 也应该被再验证一次，源站补回来了就能自愈。
-    return this.enqueueFileInternal(file, normalizeMetaArg(metaOrSavedAt), 0, 0)
+    return this.enqueueFileInternal(
+      file,
+      normalizeMetaArg(metaOrSavedAt),
+      0,
+      0,
+      opts?.resetNotFoundBudget === true,
+    )
   }
 
   /**
@@ -769,6 +780,11 @@ export class ImageLocalizer {
    * - 检出 0 张远程图 → remove（自愈清理上个会话的 stale 记录）
    * - in-flight 命中（文件正被处理）→ 不入队，仅刷新已有记录的 meta
    *
+   * @param resetNotFoundBudget 是否把死图预算清零。**只有用户显式动作**（右键
+   *   「重新本地化」/「本地化整个文件夹」）才该传 true —— 那是一次明确的"再试一次"
+   *   指令。同步侧写完笔记后的自动入队必须传 false，否则每轮同步都把预算重置，
+   *   死图永不退休、wedge 原样复活（codex 应修#2）。
+   *
    * @returns 明确的入队结果。读失败与确实没有远程图严格分开，且重复排队 /
    *   正在处理也分别上报，供右键入口判断自己点击的文件处于哪种状态。
    */
@@ -777,6 +793,7 @@ export class ImageLocalizer {
     meta: LocalizerItemMeta | undefined,
     initialRetryCount: number,
     initialNotFoundRounds: number,
+    resetNotFoundBudget = false,
   ): Promise<ImageEnqueueResult> {
     const filePath = file.path
 
@@ -786,6 +803,8 @@ export class ImageLocalizer {
     const existing = this.queue.findTaskByPath(filePath)
     if (existing) {
       if (meta) existing.meta = meta
+      // 用户显式重试时，已排队任务的死图预算同样清零。
+      if (resetNotFoundBudget) existing.notFoundRounds = 0
       // 内存任务刷新了 meta，store 必须同步，否则崩溃恢复后会用旧 meta
       // 生成错误的附件目录
       this.pendingStore?.upsert({
@@ -827,14 +846,15 @@ export class ImageLocalizer {
     }
 
     const createdAt = Date.now()
-    // 死图预算取「传入值」与「已有续传记录」的较大者。
-    // 光按传入值会留一个洞：同步侧每轮把同一篇笔记重新写盘时会走 enqueueFile
-    // （传 0），预算被无限重置 → 死图永不退休，wedge 原样复活。
-    // 已退休的笔记续传记录已被删除，所以右键「重新本地化」仍然拿到全新预算。
-    const notFoundRounds = Math.max(
-      initialNotFoundRounds,
-      this.pendingStore?.get(filePath)?.notFoundRounds ?? 0,
-    )
+    // 死图预算：用户显式重试 → 清零（明确的"再试一次"）；其余一律取「传入值」与
+    // 「已有续传记录」的较大者。光按传入值会留一个洞：同步侧每轮把同一篇笔记重新
+    // 写盘时也走 enqueueFile（传 0），预算被无限重置 → 死图永不退休、wedge 复活。
+    const notFoundRounds = resetNotFoundBudget
+      ? 0
+      : Math.max(
+          initialNotFoundRounds,
+          this.pendingStore?.get(filePath)?.notFoundRounds ?? 0,
+        )
     this.queue.enqueue({
       file,
       images,
@@ -991,6 +1011,7 @@ export class ImageLocalizer {
     // 每轮 drain 都重新验证死图：跨轮沿用会让「图床暂时 404、稍后就绪」的图
     // 在预算耗尽前一次真实请求都发不出去。
     this.roundNotFoundUrls.clear()
+    this.inDrain = true
     log('开始处理图片本地化队列...')
     const result = emptyLocalizationResult()
 
@@ -1072,6 +1093,7 @@ export class ImageLocalizer {
     } finally {
       // finally 保证异常路径也能复位 processing flag，否则队列会永久卡 processing
       this.queue.setProcessing(false)
+      this.inDrain = false
       log('图片本地化队列处理完成')
     }
     return result

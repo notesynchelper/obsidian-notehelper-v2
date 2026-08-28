@@ -5,7 +5,7 @@
 
 import { requestUrl } from 'obsidian'
 import { log, logError } from '../logger'
-import { DownloadFailureKind, DownloadResult } from './types'
+import { DownloadResult } from './types'
 import { getFallbackUrls, isOriginHost } from '../common/imageRelay'
 
 export { getFallbackUrls }
@@ -383,7 +383,8 @@ async function attemptDownloadOnce(
  * 3. relay 的 404/410 要跨节点验证；权威源站的 404/410 直接结束。
  * 4. 单请求超时、退避封顶、单图总墙钟预算共同保证队列可收敛。
  * 5. 失败结果带 failureKind：`not-found` 仅在「权威源站 404/410」或「所有线路都
- *    404/410」时给出，其余一律 `transient`（上层据此决定是永久重试还是走有界预算）。
+ *    404/410」、【且本次下载全程没有出现过任何瞬态失败】时给出，其余一律 `transient`
+ *    （上层据此决定是永久重试还是走有界预算）。
  *
  * @param url 图片URL
  * @param maxRetries 主线路最大重试次数
@@ -406,10 +407,11 @@ export async function downloadImage(
   let transientAttempt = 0
   let sawNotFound = false
   let lastResult: DownloadResult = { success: false, error: '下载失败' }
-  // 最后一次失败的分类。只有在「权威源站 404」或「所有线路都 404」时才会以
-  // not-found 收尾；任何一条线路给出瞬态失败并成为最后结论时都保持 transient，
-  // 宁可多重试也不误判死刑。
-  let lastFailureKind: DownloadFailureKind = 'transient'
+  // 本次下载只要出现过【任何一次】瞬态失败，最终就不许判成 not-found —— 哪怕后面
+  // 每条线路都回 404。因为「先超时/5xx、后 404」完全可能是同一个抽风窗口的两种表现
+  // （CDN 回源失败时先 5xx 后缓存一个 404 是常见形态），把它判成死刑会永久放弃一张
+  // 其实救得回的图（codex 阻断#1）。宁可多重试，绝不误判死刑。
+  let sawTransient = false
 
   while (attempts < normalAttempts || (sawNotFound && unavailable.size < routes.length)) {
     const remainingMs = deadline - Date.now()
@@ -442,18 +444,21 @@ export async function downloadImage(
     )
     lastResult = outcome.result
     if (outcome.kind === 'success') return outcome.result
-    lastFailureKind = outcome.kind
 
     if (outcome.kind === 'not-found') {
       sawNotFound = true
       unavailable.add(route)
       if (isOriginUrl(route) || unavailable.size === routes.length) {
-        return { ...outcome.result, failureKind: 'not-found' }
+        return {
+          ...outcome.result,
+          failureKind: sawTransient ? 'transient' : 'not-found',
+        }
       }
       // 永久失败不做退避，立即去其它节点交叉验证。
       continue
     }
 
+    sawTransient = true
     transientAttempt++
     if (attempts >= normalAttempts) break
     const delay = Math.min(
@@ -468,7 +473,11 @@ export async function downloadImage(
     }
   }
 
-  return { ...lastResult, failureKind: lastFailureKind }
+  // 只有「见过 404/410」且「全程没有任何瞬态」才敢收尾成 not-found。
+  return {
+    ...lastResult,
+    failureKind: sawNotFound && !sawTransient ? 'not-found' : 'transient',
+  }
 }
 
 /**

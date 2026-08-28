@@ -162,6 +162,9 @@ describe('relocalizeFolder 批量编排', () => {
           author: `author:${value.path}`,
           siteName: `source:${value.path}`,
         }),
+        // 用户显式动作 → 死图（404/410）有界预算清零，图床补回来了当场自愈。
+        // 同步侧的自动入队【不】带这个标志，否则预算会被每轮同步重置。
+        { resetNotFoundBudget: true },
       )
       expect(attachmentLocalizer.enqueueFile).toHaveBeenCalledWith(
         value,

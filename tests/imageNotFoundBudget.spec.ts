@@ -134,6 +134,28 @@ describe('downloadImage 的 failureKind 分类', () => {
     expect(r.failureKind).toBeUndefined()
   })
 
+  test('先瞬态后全 404 → 仍是 transient（绝不因抽风窗口误判死刑）', async () => {
+    // CDN 回源失败时「先 5xx、随后缓存一个 404」是常见形态；若按"最后一次结果"
+    // 定案就会把救得回的图判死刑，连续几轮后永久退休（codex 阻断#1）。
+    let n = 0
+    mockRequestUrl.mockImplementation(async () =>
+      ++n === 1 ? statusResponse(503) : statusResponse(404),
+    )
+    await expect(
+      downloadImage(RELAY_URL, MAX_IMAGE_DOWNLOAD_RETRIES, 0),
+    ).resolves.toMatchObject({ failureKind: 'transient' })
+
+    // 同一形状但发生在【权威源站】上，同样不许判 not-found
+    jest.clearAllMocks()
+    n = 0
+    mockRequestUrl.mockImplementation(async () =>
+      ++n === 1 ? statusResponse(500) : statusResponse(404),
+    )
+    await expect(downloadImage(DEAD_URL, 2, 0)).resolves.toMatchObject({
+      failureKind: 'transient',
+    })
+  })
+
   test('所有线路都 404 才判 not-found；有一路是瞬态失败则保持 transient', async () => {
     mockRequestUrl.mockResolvedValue(statusResponse(404))
     await expect(downloadImage(RELAY_URL, 1, 0)).resolves.toMatchObject({
@@ -374,6 +396,71 @@ describe('死图有界预算（drainQueue）', () => {
     }
 
     expect(store.get(NOTE)).toBeUndefined()
+  })
+
+  test('预算未耗尽时右键重新本地化也要清零（不是只在退休后才管用）', async () => {
+    mockRequestUrl.mockResolvedValue(statusResponse(404))
+    const { localizer, store } = build()
+    const file = makeFile()
+
+    await localizer.enqueueFile(file)
+    await localizer.processQueue()
+    for (let round = 2; round < NOT_FOUND_ROUND_BUDGET; round++) {
+      await runRound(localizer, file)
+    }
+    // 此刻 5/6，差一轮就退休
+    expect(store.get(NOTE)?.notFoundRounds).toBe(NOT_FOUND_ROUND_BUDGET - 1)
+
+    // 用户显式右键 = 明确的"再试一次" → 预算清零，不该下一轮就被退休
+    localizer.clearProcessedMark(NOTE)
+    await localizer.enqueueFile(file, undefined, { resetNotFoundBudget: true })
+    await localizer.processQueue()
+
+    expect(store.get(NOTE)).toBeDefined()
+    expect(store.get(NOTE)?.notFoundRounds).toBe(1)
+  })
+
+  test('drain 之后直接调用 public localizeFile：死图名单不许沿用', async () => {
+    mockRequestUrl.mockResolvedValue(statusResponse(404))
+    const { localizer } = build()
+    const file = makeFile()
+
+    await localizer.enqueueFile(file)
+    await localizer.processQueue()
+    const callsAfterDrain = mockRequestUrl.mock.calls.length
+
+    // 源站恢复了，此时一次独立的 localizeFile 必须真的再发请求（而不是命中
+    // 上一轮 drain 的死图名单直接返回 not-found）。
+    mockRequestUrl.mockResolvedValue(pngResponse())
+    const outcome = emptyFileLocalizeOutcome()
+    const ok = await localizer.localizeFile(file, undefined, outcome)
+
+    expect(mockRequestUrl.mock.calls.length).toBeGreaterThan(callsAfterDrain)
+    expect(ok).toBe(true)
+    expect(outcome.hasNotFound).toBe(false)
+  })
+
+  test('历史 mock（只接前两个参数、不写 sink）被保守当成瞬态，绝不消耗预算', async () => {
+    // 大量既有单测 spy 了 localizeFile 且忽略第三个参数。这类 mock 下 sink 全是
+    // 默认值，deadOnly=false → 走瞬态分支永久重试，与历史行为完全一致。
+    const { localizer, store } = build()
+    const file = makeFile()
+    mockRequestUrl.mockResolvedValue(statusResponse(404))
+    await localizer.enqueueFile(file)
+
+    jest
+      .spyOn(localizer, 'localizeFile')
+      .mockImplementation(async (_f: unknown, onDone?: () => void) => {
+        onDone?.()
+        return false
+      })
+
+    for (let i = 0; i < NOT_FOUND_ROUND_BUDGET * 2; i++) {
+      await runRound(localizer, file)
+    }
+
+    expect(store.get(NOTE)).toBeDefined()
+    expect(store.get(NOTE)?.notFoundRounds).toBe(0)
   })
 
   test('续传记录的 notFoundRounds 跨重启保留（不会白白重来）', async () => {
