@@ -1036,8 +1036,8 @@ const CHAT_TIMESTAMP_RE = /\*\*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})\*\*/g
 const CHAT_TIMESTAMP_PARTS_RE =
   /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/
 /** 换行整理阶段用的占位符（渲染值可能多行，不能参与整理，所以先占位后回填） */
-const CHAT_TIMESTAMP_TOKEN_RE = /\u0000nhts(\d+)\u0000/g
-const chatTimestampToken = (i: number): string => `\u0000nhts${i}\u0000`
+const CHAT_TIMESTAMP_TOKEN_RE = /\uE000nhts(\d+)\uE000/g
+const chatTimestampToken = (i: number): string => `\uE000nhts${i}\uE000`
 
 /**
  * 「聊天记录时间样式」模板的 view：
@@ -1104,7 +1104,7 @@ export const processContentTimestamps = (
   processed = processed.replace(/\n{3,}/g, '\n\n')
 
   // 3. 移除时间戳后的多余空行（时间戳+换行+换行 -> 时间戳+换行）
-  processed = processed.replace(/(\u0000nhts\d+\u0000)\n\n/g, '$1\n')
+  processed = processed.replace(/(\uE000nhts\d+\uE000)\n\n/g, '$1\n')
 
   // 4. 占位符回填成渲染值
   return processed.replace(CHAT_TIMESTAMP_TOKEN_RE, (_whole, i: string) => rendered[Number(i)])
