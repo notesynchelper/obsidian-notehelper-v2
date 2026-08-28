@@ -11,7 +11,7 @@ import {
   snakeToCamelCase,
   truncateWithOmission,
 } from '../util'
-import { HighlightManagerId } from '.'
+import { HighlightManagerId, DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE } from '.'
 import { logError } from '../logger'
 import { bloomFromIds } from '../compressIds'
 import { maskTemplaterTags } from '../sync/templaterRelay'
@@ -677,12 +677,19 @@ export const renderItemContent = (
   // 「笔记属性不含 id」模式：frontmatter 不写强制 id、合并模式也不写 syncedIds，
   // 去重完全交给最新同步游标（见 sync/cursorDedupe.ts）
   omitFrontmatterId = false,
+  // 聊天记录内层时间戳样式（settings.chatRecordTimestampTemplate），只在企微消息分支用到
+  chatRecordTimestampTemplate?: string,
 ): string => {
   // 🆕 企微消息特殊处理：直接使用简洁模板，不添加分隔符
   if (shouldMergeIntoSingleFile && isWeChatMessage(item)) {
     const dateSaved = formatDate(item.savedAt, dateSavedFormat)
     const simpleContent = wechatMessageTemplate
-      ? renderWeChatMessageSimple(item, dateSavedFormat, wechatMessageTemplate)
+      ? renderWeChatMessageSimple(
+          item,
+          dateSavedFormat,
+          wechatMessageTemplate,
+          chatRecordTimestampTemplate,
+        )
       : `📅 ${dateSaved}\n\n${item.content || ''}`
 
     // 创建简单的Front Matter
@@ -1024,24 +1031,83 @@ export const generateMessageHeading = (item: Item): string => {
   return summary || '消息'
 }
 
+/** 聊天记录（多选转发）里每条内层消息前的时间戳：**yyyy/MM/dd HH:mm:ss** */
+const CHAT_TIMESTAMP_RE = /\*\*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})\*\*/g
+const CHAT_TIMESTAMP_PARTS_RE =
+  /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/
+/** 换行整理阶段用的占位符（渲染值可能多行，不能参与整理，所以先占位后回填） */
+const CHAT_TIMESTAMP_TOKEN_RE = /\u0000nhts(\d+)\u0000/g
+const chatTimestampToken = (i: number): string => `\u0000nhts${i}\u0000`
+
 /**
- * 处理聊天记录内容中的时间戳，将其转换为弱化样式，并精简换行
+ * 「聊天记录时间样式」模板的 view：
+ *   timestamp = 原串 yyyy/MM/dd HH:mm:ss、date = yyyy-MM-dd、time = HH:mm:ss、
+ *   timeShort = HH:mm，外加内置函数（{{#formatDate}}{{timestamp}},HH:mm{{/formatDate}} 可用）。
+ * 拆解直接按字面切，不经 Date（聊天记录里的时间本来就是本地时间字面量，绕开时区）。
  */
-const processContentTimestamps = (content: string): string => {
-  // 1. 匹配聊天记录中的时间戳格式: **yyyy/MM/dd HH:mm:ss**
-  // 将其转换为弱化样式: <small style="color: #999;">yyyy/MM/dd HH:mm:ss</small>
-  let processed = content.replace(
-    /\*\*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})\*\*/g,
-    '<small style="color: #999;">$1</small>'
+const buildChatTimestampView = (timestamp: string) => {
+  const m = timestamp.match(CHAT_TIMESTAMP_PARTS_RE)
+  return {
+    timestamp,
+    date: m ? `${m[1]}-${m[2]}-${m[3]}` : '',
+    time: m ? `${m[4]}:${m[5]}:${m[6]}` : '',
+    timeShort: m ? `${m[4]}:${m[5]}` : '',
+    ...functionMap,
+  }
+}
+
+const renderChatTimestamp = (timestamp: string, template: string): string => {
+  const mask = maskTemplaterTags(template)
+  // 关掉 Mustache 的 HTML 转义：时间戳里的 `/` 会被 {{timestamp}}（双花括号）转成
+  // `&#x2F;`，{{#formatDate}}{{timestamp}},HH:mm{{/formatDate}} 这种与文章模板同款的
+  // 写法就解析不出日期（实测）。这段渲染结果落在 markdown 正文里，转义没有意义。
+  return mask.restore(
+    Mustache.render(mask.text, buildChatTimestampView(timestamp), undefined, {
+      escape: (value: string) => value,
+    }),
   )
+}
+
+/**
+ * 处理聊天记录内容中的时间戳：按「聊天记录时间样式」模板渲染每个时间戳，并精简换行。
+ *
+ * @param template 时间戳样式模板；缺省 / 空白 = {@link DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE}
+ *   （历史硬编码的灰色小字，输出逐字节不变）。模板渲染失败 → logError + 回落默认模板，
+ *   绝不让整条消息丢。
+ */
+export const processContentTimestamps = (
+  content: string,
+  template: string = DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE,
+): string => {
+  const effective =
+    template && template.trim() ? template : DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE
+  const rendered: string[] = []
+  let reportedError = false
+
+  // 1. 命中的时间戳先换成占位符，渲染值暂存（渲染值可能多行，不能参与下面的换行整理）
+  let processed = content.replace(CHAT_TIMESTAMP_RE, (_whole, timestamp: string) => {
+    let value: string
+    try {
+      value = renderChatTimestamp(timestamp, effective)
+    } catch (e) {
+      if (!reportedError) {
+        reportedError = true
+        logError('聊天记录时间样式渲染失败，本条已按默认样式显示', e)
+      }
+      value = renderChatTimestamp(timestamp, DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE)
+    }
+    rendered.push(value)
+    return chatTimestampToken(rendered.length - 1)
+  })
 
   // 2. 精简多余换行：将连续3个及以上换行替换为2个换行
   processed = processed.replace(/\n{3,}/g, '\n\n')
 
   // 3. 移除时间戳后的多余空行（时间戳+换行+换行 -> 时间戳+换行）
-  processed = processed.replace(/(<small style="color: #999;">.*?<\/small>)\n\n/g, '$1\n')
+  processed = processed.replace(/(\u0000nhts\d+\u0000)\n\n/g, '$1\n')
 
-  return processed
+  // 4. 占位符回填成渲染值
+  return processed.replace(CHAT_TIMESTAMP_TOKEN_RE, (_whole, i: string) => rendered[Number(i)])
 }
 
 /**
@@ -1076,13 +1142,15 @@ export const renderWeChatMessageSimple = (
   item: Item,
   dateSavedFormat: string,
   wechatMessageTemplate: string,
+  // 聊天记录内层时间戳的显示样式（settings.chatRecordTimestampTemplate）；缺省 = 旧的灰色小字
+  chatRecordTimestampTemplate?: string,
 ): string => {
-  // 处理content中的时间戳，将其弱化显示；再去掉首部空行 + 尾部空白 ——
+  // 处理content中的时间戳（按「聊天记录时间样式」渲染）；再去掉首部空行 + 尾部空白 ——
   // 多选转发（聊天记录）的 content 自带尾换行（每条内层消息后 `\n\n`），不裁掉的话
   // 模板里 {{{content}}} 后面的收尾行（如 `- - -`）前面会多出一个空行（问题 3）。
   // 正文中间的段落空行不动。
   const processedContent = item.content
-    ? processContentTimestamps(item.content)
+    ? processContentTimestamps(item.content, chatRecordTimestampTemplate)
         .replace(/^(?:\r?\n)+/, '')
         .replace(/\s+$/, '')
     : ''

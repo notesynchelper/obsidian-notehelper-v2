@@ -335,6 +335,23 @@ const zh: Dict = {
         resetTooltip: '重置为默认模板',
         noticeReset: '助手消息模板已重置',
       },
+      chatRecordTimestamp: {
+        name: '聊天记录时间样式',
+        desc:
+          '多选转发的聊天记录里，每条内层消息前面都有一行时间（yyyy/MM/dd HH:mm:ss）。这里决定这行时间怎么显示；留空 = 默认的灰色小字。',
+        varsIntro: '可用变量：',
+        varTimestamp: '• {{{timestamp}}} = 原始时间（yyyy/MM/dd HH:mm:ss）',
+        varDate: '• {{{date}}} = 日期（yyyy-MM-dd）',
+        varTime: '• {{{time}}} = 时:分:秒',
+        varTimeShort: '• {{{timeShort}}} = 时:分',
+        functionsHint: '内置函数同样可用，例如 {{#formatDate}}{{timestamp}},HH:mm{{/formatDate}}',
+        examplesIntro: '示例：',
+        example1: '• {{{time}}} → 纯文字，只显示时:分:秒',
+        example2: '• <small style="color: #999;">{{{timestamp}}}</small> → 灰色小字（默认）',
+        placeholder: '<small style="color: #999;">{{{timestamp}}}</small>',
+        resetTooltip: '重置为默认样式',
+        noticeReset: '聊天记录时间样式已重置',
+      },
       templateVars: {
         name: '可用模板变量',
         descIntro: '查看所有可用的模板变量和使用示例：',

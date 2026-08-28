@@ -140,6 +140,14 @@ export const PREV_DEFAULT_FRONT_MATTER_TEMPLATE =
  */
 export const DEFAULT_DIARY_LINK_TEMPLATE = '- {{{link}}}'
 
+/**
+ * 「聊天记录时间样式」默认值：多选转发的聊天记录里每条内层消息前的
+ * `**yyyy/MM/dd HH:mm:ss**` 怎么显示。默认 = 历史硬编码的灰色小字，零回归；
+ * 可用变量 timestamp / date / time / timeShort + 内置函数（见 template.ts processContentTimestamps）。
+ */
+export const DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE =
+  '<small style="color: #999;">{{{timestamp}}}</small>'
+
 export const DEFAULT_SETTINGS: OmnivoreSettings = {
   dateHighlightedFormat: 'yyyy-MM-dd HH:mm:ss',
   dateSavedFormat: 'yyyy-MM-dd HH:mm:ss',
@@ -181,6 +189,7 @@ export const DEFAULT_SETTINGS: OmnivoreSettings = {
   sectionSeparator: '%%{{{dateSaved}}}_start%%',  // 新增: 单文件模式中消息分隔符起始标记(空字符串表示不分隔)
   sectionSeparatorEnd: '%%{{{dateSaved}}}_end%%',  // 新增: 单文件模式中消息分隔符结束标记
   wechatMessageTemplate: '---\n#### {{{heading}}}\n## 📅 {{{dateSaved}}}\n{{{content}}}',  // 新增: 企微消息简洁模板（heading为内容摘要，用于日记链接锚点）
+  chatRecordTimestampTemplate: DEFAULT_CHAT_RECORD_TIMESTAMP_TEMPLATE,  // 聊天记录内层时间戳样式（默认 = 旧的灰色小字）
   // 图片处理设置
   imageMode: ImageMode.LOCAL,  // 图片处理模式（默认缓存到本地）
   enablePngToJpeg: false,  // PNG转JPEG（默认关闭）
@@ -265,6 +274,8 @@ export interface OmnivoreSettings {
   sectionSeparator: string  // 新增: 单文件模式中消息分隔符起始标记(空字符串表示不分隔)
   sectionSeparatorEnd: string  // 新增: 单文件模式中消息分隔符结束标记
   wechatMessageTemplate: string  // 新增: 企微消息简洁模板
+  // 聊天记录（多选转发）内层时间戳的显示样式；变量 timestamp / date / time / timeShort
+  chatRecordTimestampTemplate: string
   // 图片处理设置
   imageMode: ImageMode  // 图片处理模式
   enablePngToJpeg: boolean  // PNG转JPEG

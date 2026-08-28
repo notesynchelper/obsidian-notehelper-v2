@@ -348,6 +348,23 @@ const en = {
         resetTooltip: 'Reset to default template',
         noticeReset: 'Assistant message template reset',
       },
+      chatRecordTimestamp: {
+        name: 'Chat record time style',
+        desc:
+          'In a forwarded chat record every inner message starts with a time line (yyyy/MM/dd HH:mm:ss). This decides how that line is shown; empty = the default small grey text.',
+        varsIntro: 'Available variables:',
+        varTimestamp: '• {{{timestamp}}} = original time (yyyy/MM/dd HH:mm:ss)',
+        varDate: '• {{{date}}} = date (yyyy-MM-dd)',
+        varTime: '• {{{time}}} = hour:minute:second',
+        varTimeShort: '• {{{timeShort}}} = hour:minute',
+        functionsHint: 'Built-in helpers work here too, e.g. {{#formatDate}}{{timestamp}},HH:mm{{/formatDate}}',
+        examplesIntro: 'Examples:',
+        example1: '• {{{time}}} → plain text, hour:minute:second only',
+        example2: '• <small style="color: #999;">{{{timestamp}}}</small> → small grey text (default)',
+        placeholder: '<small style="color: #999;">{{{timestamp}}}</small>',
+        resetTooltip: 'Reset to default style',
+        noticeReset: 'Chat record time style reset',
+      },
       templateVars: {
         name: 'Available template variables',
         descIntro: 'View all available template variables and examples: ',

@@ -195,7 +195,9 @@ export class MergeProcessor {
 			const rendered = renderWeChatMessageSimple(
 				b.item,
 				this.context.settings.dateSavedFormat,
-				wechatTemplate
+				wechatTemplate,
+				// 聊天记录内层时间戳样式（缺省 = 旧的灰色小字）
+				this.context.settings.chatRecordTimestampTemplate
 			).trimEnd()
 			if (!rendered) {
 				logError(`Warning: rendered message content is empty, ID: ${b.item.id}`)

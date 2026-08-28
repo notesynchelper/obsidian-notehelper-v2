@@ -1627,6 +1627,7 @@ export default class OmnivorePlugin extends Plugin {
             fileAttachment,
             effectiveWechatMessageTemplate,
             omitIdActive,
+            this.settings.chatRecordTimestampTemplate,
           )
           const content = renderFor(shouldMergeIntoSingleFile)
           // log(`🔧 内容渲染完成`)

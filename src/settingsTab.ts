@@ -1464,6 +1464,68 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     assistantTemplateSetting.settingEl.insertAdjacentElement('afterend', assistantTplStatusEl)
     updateAssistantTemplaterStatus(this.plugin.settings.wechatMessageTemplate ?? '')
 
+    // 聊天记录时间样式：多选转发里每条内层消息前的 **yyyy/MM/dd HH:mm:ss** 怎么显示
+    // （默认 = 历史硬编码的灰色小字；变量 timestamp / date / time / timeShort + 内置函数）
+    const chatRecordTimestampSetting = new Setting(messageBody)
+      .setName(t('settings.advanced.chatRecordTimestamp.name'))
+      .setDesc(
+        createFragment((fragment) => {
+          fragment.append(
+            t('settings.advanced.chatRecordTimestamp.desc'),
+            fragment.createEl('br'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.varsIntro'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.varTimestamp'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.varDate'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.varTime'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.varTimeShort'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.functionsHint'),
+            fragment.createEl('br'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.examplesIntro'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.example1'),
+            fragment.createEl('br'),
+            t('settings.advanced.chatRecordTimestamp.example2'),
+          )
+        }),
+      )
+      .addTextArea((text) => {
+        text
+          .setPlaceholder(t('settings.advanced.chatRecordTimestamp.placeholder'))
+          .setValue(
+            this.plugin.settings.chatRecordTimestampTemplate ??
+              DEFAULT_SETTINGS.chatRecordTimestampTemplate,
+          )
+          .onChange(async (value) => {
+            if (!validateTemplate(value, '聊天记录时间样式', { allowTemplaterTags: true })) return
+            // 空串 = 默认样式（与其它模板的 value || default 一致；渲染侧同样兜底）
+            this.plugin.settings.chatRecordTimestampTemplate =
+              value || DEFAULT_SETTINGS.chatRecordTimestampTemplate
+            await this.plugin.saveSettings(true)
+          })
+        text.inputEl.setAttr('rows', 2)
+        text.inputEl.setAttr('cols', 30)
+      })
+      .addExtraButton((button) => {
+        button
+          .setIcon('reset')
+          .setTooltip(t('settings.advanced.chatRecordTimestamp.resetTooltip'))
+          .onClick(async () => {
+            this.plugin.settings.chatRecordTimestampTemplate =
+              DEFAULT_SETTINGS.chatRecordTimestampTemplate
+            await this.plugin.saveSettings(true)
+            this.display()
+            new Notice(t('settings.advanced.chatRecordTimestamp.noticeReset'))
+          })
+      })
+    chatRecordTimestampSetting.settingEl.addClass('notehelper-chat-record-timestamp-row')
+
 
     // ▸ 模板设置（二级折叠，默认收起）
     const templateBody = this.createSection(
