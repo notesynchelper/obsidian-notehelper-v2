@@ -66,3 +66,46 @@ export function renderDiaryLinkTemplate(template: string, view: Record<string, u
 	const rendered = mask.restore(Mustache.render(mask.text, view))
 	return rendered.replace(/\s+$/, '')
 }
+
+// ---------------------------------------------------------------------------
+// 块间距：多行模板写进日记时的空行规则
+//
+// 单行模板（去掉尾部空白后不含换行）沿用旧版拼法：同批 `\n` 相连成列表，前后只按需
+// 补一个 `\n`。多行模板才进「块模式」：同批条目之间空一行，整块与前后既有内容之间
+// 至少一个空行——按拼接处**实际已有**的换行数补差，用户模板自带的开头空行、
+// 文件里本来就有的空行都算数，不会叠成两个空行。
+// ---------------------------------------------------------------------------
+
+/** 多行模板 = 去掉尾部空白后仍含换行（模板末尾多打的换行不算） */
+export function isBlockTemplate(template: string): boolean {
+	return template.replace(/\s+$/, '').includes('\n')
+}
+
+function countNewlines(s: string): number {
+	return (s.match(/\n/g) || []).length
+}
+
+function trailingNewlines(s: string): number {
+	const m = /(?:\r?\n)*$/.exec(s)
+	return m ? countNewlines(m[0]) : 0
+}
+
+function leadingNewlines(s: string): number {
+	const m = /^(?:\r?\n)*/.exec(s)
+	return m ? countNewlines(m[0]) : 0
+}
+
+/**
+ * left 与 right 拼接处要补多少换行，才能让两边的最后 / 第一个非空行之间恰好隔出一个空行。
+ * 任一侧为空串 → 不补（文件开头 / 文件末尾没有「前后内容」可言）。
+ */
+export function blankLineGap(left: string, right: string): string {
+	if (!left || !right) return ''
+	const have = trailingNewlines(left) + leadingNewlines(right)
+	return have >= 2 ? '' : '\n'.repeat(2 - have)
+}
+
+/** 块模式下把同批条目拼起来：条目之间恰好一个空行 */
+export function joinLinkBlocks(entries: string[]): string {
+	return entries.reduce((acc, entry) => acc + blankLineGap(acc, entry) + entry, '')
+}

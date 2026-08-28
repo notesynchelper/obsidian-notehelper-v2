@@ -16,6 +16,9 @@ import {
 	buildDiaryLinkView,
 	renderDiaryLinkTemplate,
 	resolveDiaryLinkTemplate,
+	isBlockTemplate,
+	blankLineGap,
+	joinLinkBlocks,
 } from './diaryLinkTemplate'
 
 /**
@@ -203,7 +206,9 @@ export class DiaryLinkProcessor {
 	 * 模板坏了（语法错误 / 渲染抛错 / 渲染成空）→ 记一次错误并回落默认模板，
 	 * 绝不让整批链接丢。
 	 */
-	private renderLinkEntry(linkItem: DiaryLinkItem): { text: string; bareLink: string } {
+	private renderLinkEntry(
+		linkItem: DiaryLinkItem,
+	): { text: string; bareLink: string; block: boolean } {
 		const { link, title } = this.buildBareLink(linkItem)
 		const view = buildDiaryLinkView({
 			item: linkItem.item,
@@ -228,10 +233,13 @@ export class DiaryLinkProcessor {
 		} catch (error) {
 			this.reportTemplateFailure(error)
 		}
+		let usedTemplate = template
 		if (text === null) {
-			text = renderDiaryLinkTemplate(DEFAULT_DIARY_LINK_TEMPLATE, view)
+			usedTemplate = DEFAULT_DIARY_LINK_TEMPLATE
+			text = renderDiaryLinkTemplate(usedTemplate, view)
 		}
-		return { text, bareLink: link }
+		// 多行模板 → 块模式（条目之间 / 与前后内容之间空一行）；回落默认时按默认（单行）算
+		return { text, bareLink: link, block: isBlockTemplate(usedTemplate) }
 	}
 
 	private reportTemplateFailure(error: unknown): void {
@@ -347,6 +355,7 @@ export class DiaryLinkProcessor {
 		// （上面 existingIds 照扫），与另外两个「不写 id」开关的承诺一致。
 		const noMarkers = this.noDiaryMarkers
 		const newLinks: string[] = []
+		let blockMode = false
 		for (const link of this.sortLinks(links, plan.order)) {
 			if (existingIds.has(link.item.id)) continue
 			const entry = this.renderLinkEntry(link)
@@ -359,6 +368,7 @@ export class DiaryLinkProcessor {
 					: `${entry.text} <!-- ${DIARY_ID_MARKER_PREFIX}${link.item.id} -->`,
 			)
 			existingIds.add(link.item.id)
+			blockMode = blockMode || entry.block
 		}
 
 		if (newLinks.length === 0) {
@@ -366,12 +376,23 @@ export class DiaryLinkProcessor {
 			return { success: true }
 		}
 
-		// 拼接：前后各按需补一个换行，保证插入的每条链接独占一行、
-		// 且不把落点后面原有的内容（第二个锚点 / 正文首行）粘到同一行上。
 		const at = plan.insertAt
-		const leading = at === 0 || content[at - 1] === '\n' ? '' : '\n'
-		const trailing = content[at] === '\n' ? '' : '\n'
-		const linksText = leading + newLinks.join('\n') + trailing
+		let linksText: string
+		if (blockMode) {
+			// 多行模板 = 块模式：同批条目之间空一行；整块与前后既有内容之间至少一个空行
+			// （按拼接处实际已有的换行补差，不叠加）；落在文件末尾时只补一个换行收尾。
+			const before = content.slice(0, at)
+			const after = content.slice(at)
+			const blocks = joinLinkBlocks(newLinks)
+			linksText =
+				blankLineGap(before, blocks) + blocks + (after ? blankLineGap(blocks, after) : '\n')
+		} else {
+			// 单行模板：与历史实现逐字节一致——前后各按需补一个换行，保证插入的每条链接
+			// 独占一行、且不把落点后面原有的内容（第二个锚点 / 正文首行）粘到同一行上。
+			const leading = at === 0 || content[at - 1] === '\n' ? '' : '\n'
+			const trailing = content[at] === '\n' ? '' : '\n'
+			linksText = leading + newLinks.join('\n') + trailing
+		}
 		const nextContent = content.slice(0, at) + linksText + content.slice(at)
 
 		// 写入文件
