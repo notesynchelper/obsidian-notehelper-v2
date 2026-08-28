@@ -1077,8 +1077,15 @@ export const renderWeChatMessageSimple = (
   dateSavedFormat: string,
   wechatMessageTemplate: string,
 ): string => {
-  // 处理content中的时间戳，将其弱化显示
-  const processedContent = item.content ? processContentTimestamps(item.content) : ''
+  // 处理content中的时间戳，将其弱化显示；再去掉首部空行 + 尾部空白 ——
+  // 多选转发（聊天记录）的 content 自带尾换行（每条内层消息后 `\n\n`），不裁掉的话
+  // 模板里 {{{content}}} 后面的收尾行（如 `- - -`）前面会多出一个空行（问题 3）。
+  // 正文中间的段落空行不动。
+  const processedContent = item.content
+    ? processContentTimestamps(item.content)
+        .replace(/^(?:\r?\n)+/, '')
+        .replace(/\s+$/, '')
+    : ''
 
   const articleView = buildMessageView(item, dateSavedFormat, processedContent)
   // Templater 掩码：未接力的 <% %> 标签原样保留，防 Mustache 吃掉表达式里的 {{...}}
