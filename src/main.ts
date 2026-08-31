@@ -1406,10 +1406,12 @@ export default class OmnivorePlugin extends Plugin {
     const reminder = computeRenewalReminder(vipStatus, now)
     if (!reminder) return undefined
 
-    // 防抖保存即可：紧接着的游标落盘会把它一起写下去。这里不做立即写盘（saveSettings(true)
-    // 会连带外部配置备份），别让一个可有可无的提醒把「同步完成」的提示又拖住几百毫秒。
+    // 只写内存：有新游标的那条分支紧接着就整份落盘（含这个日期）；另外两条分支
+    // （调试同步 / 没有新文章）由调用方在 Notice 出来之后补一次立即落盘 ——
+    // 不能只靠防抖，退出/崩溃会让「今天已提醒」丢掉、重启后再提醒一次。
+    // 这里也不能自己 saveSettings(true)：它快照的是【还没写入游标】的设置，
+    // 若晚于游标那次写盘落地，会把刚推进的同步游标覆盖回去。
     this.settings.renewalReminderLastShown = localDateKey(now)
-    void this.saveSettings()
 
     return {
       text: reminder.noticeText,
@@ -1900,6 +1902,16 @@ export default class OmnivorePlugin extends Plugin {
         log('⚠️ 没有成功处理任何文章，不更新同步时间')
         if (manualSync) {
           noticeManager.completeSync(0, renewalNotice)
+        }
+      }
+
+      // 续费提醒的「今天已提醒」补落盘：上面只有 cursorValue 分支整份写过盘。
+      // 放在 completeSync 之后 → 不拖慢提示，也保证晚于游标写盘、不会覆盖它。
+      if (renewalNotice && !cursorValue) {
+        try {
+          await this.saveSettings(true)
+        } catch (error) {
+          logError('会员续费提醒：保存提醒日期失败，下次同步可能重复提醒', error)
         }
       }
 

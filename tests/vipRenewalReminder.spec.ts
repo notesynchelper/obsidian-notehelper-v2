@@ -250,6 +250,16 @@ describe('弹窗「当前：」那行的状态文案', () => {
     expect(buildVipStatusText(vip('obvvip', '2026-09-02T10:00:00.000Z'), now)).toContain('头等舱会员')
   })
 
+  it('未开通 / 未知档位：绝不冒充成「正式会员」', () => {
+    const now = at('2026-08-31T09:00:00.000Z')
+    // 没有会员记录（实时刷新返回未开通）
+    expect(buildVipStatusText(vip('none', undefined), now)).toBe('未开通会员')
+    // 服务端出现插件还不认识的新档位：保留旧 displayText 的「未知类型」措辞
+    expect(buildVipStatusText(vip('none', '2026-09-12T10:00:00.000Z'), now)).toBe(
+      '未知类型 | 到期时间：2026/09/12 10:00',
+    )
+  })
+
   it('缺到期时间 / 日期非法：只显示档位，不拼半截时间', () => {
     const now = at('2026-08-31T09:00:00.000Z')
     expect(buildVipStatusText(vip('obvip', undefined), now)).toBe('正式会员')

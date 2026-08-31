@@ -113,12 +113,20 @@ function noticeText(
  * 中文输出与 displayText 逐字一致（零观感变化），英文才真正变成英文。
  */
 export function buildVipStatusText(vip: VipStatus, now: Date): string {
+  // 'none' 分两种：压根没有会员记录（没到期时间）→「未开通会员」；
+  // 有到期时间但档位不认识（服务端加了新类型）→「未知类型」，与旧 displayText 一致。
+  // 绝不能把它们默认成「正式会员」——那是在告诉用户一个他并不拥有的身份。
+  if (vip.vipType === 'none') {
+    if (!vip.endTime) return t('vipRenewal.modal.tierNone')
+  }
   const tierKey =
     vip.vipType === 'obtrail'
       ? 'vipRenewal.modal.tierTrial'
       : vip.vipType === 'obvvip'
         ? 'vipRenewal.modal.tierPremium'
-        : 'vipRenewal.modal.tierMember'
+        : vip.vipType === 'obvip'
+          ? 'vipRenewal.modal.tierMember'
+          : 'vipRenewal.modal.tierUnknown'
   const tier = t(tierKey as Parameters<typeof t>[0])
 
   if (!vip.endTime) return tier

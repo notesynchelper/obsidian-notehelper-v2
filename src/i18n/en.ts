@@ -50,6 +50,8 @@ const en = {
       titleRenew: 'Renew membership',
       titleSubscribe: 'Get membership',
       currentLabel: 'Current: ',
+      tierNone: 'No membership',
+      tierUnknown: 'Unknown membership type',
       tierTrial: 'Trial membership',
       tierMember: 'Membership',
       tierPremium: 'First-class membership',

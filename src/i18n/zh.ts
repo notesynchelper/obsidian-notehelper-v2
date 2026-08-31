@@ -44,6 +44,8 @@ const zh: Dict = {
       titleRenew: '续费会员',
       titleSubscribe: '开通会员',
       currentLabel: '当前：',
+      tierNone: '未开通会员',
+      tierUnknown: '未知类型',
       tierTrial: '试用会员',
       tierMember: '正式会员',
       tierPremium: '头等舱会员',

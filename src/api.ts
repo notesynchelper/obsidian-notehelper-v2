@@ -853,11 +853,32 @@ export interface VipStatus {
 // 生产用户永远不传，恒打生产。
 const VIP_API_BASE = 'https://obsidian.notebooksyncer.com'
 
+/**
+ * Cosmos 的 vip_type 有长短两套写法，归一到插件内部的三个档位。
+ * 权威口径见 wecom-consumer/utils/vip-checker.js 的 VIP_TYPE_MAP：
+ *   试用 obtrail/trail、正式 obvip/vip、头等舱 obvvip/vvip/vvvip。
+ * 只认这几个已知值；没见过的类型一律 none —— 宁可不认，也不冒充成会员。
+ */
+const VIP_TYPE_ALIASES: Record<string, 'obtrail' | 'obvip' | 'obvvip'> = {
+  obtrail: 'obtrail',
+  trail: 'obtrail',
+  obvip: 'obvip',
+  vip: 'obvip',
+  obvvip: 'obvvip',
+  vvip: 'obvvip',
+  vvvip: 'obvvip',
+}
+
+export const normalizeVipType = (raw: unknown): 'obtrail' | 'obvip' | 'obvvip' | 'none' => {
+  if (typeof raw !== 'string') return 'none'
+  return VIP_TYPE_ALIASES[raw.trim().toLowerCase()] || 'none'
+}
+
 // 把 /user-config[/refresh] 的 JSON 响应解析成 VipStatus（自动/手动两条路共用）。
-const parseVipConfigResponse = (vipResponse: VipConfigResponse): VipStatus => {
+export const parseVipConfigResponse = (vipResponse: VipConfigResponse): VipStatus => {
   if (vipResponse.success && vipResponse.data && vipResponse.data.length > 0) {
     const vipData = vipResponse.data[0]
-    const vipType = vipData.vip_type as 'obtrail' | 'obvip' | 'obvvip'
+    const vipType = normalizeVipType(vipData.vip_type)
     const endTime = vipData.endtime
 
     // 判断是否过期
@@ -868,9 +889,10 @@ const parseVipConfigResponse = (vipResponse: VipConfigResponse): VipStatus => {
       obtrail: '试用会员',
       obvip: '正式会员',
       obvvip: '头等舱会员',
+      none: '未知类型',
     }
 
-    const typeName = vipTypeNames[vipType] || '未知类型'
+    const typeName = vipTypeNames[vipType]
     const expiredSuffix = isValid ? '' : '（已过期）'
     const timeStr = endTime
       ? new Date(endTime).toLocaleString('zh-CN', {
