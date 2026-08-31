@@ -1,7 +1,8 @@
 import { Item } from '@omnivore-app/api'
 import { normalizePath, TFile } from 'obsidian'
 import { SyncContext } from './SyncContext'
-import { logError } from '../logger'
+import { log, logError } from '../logger'
+import { legacyLinkUnsafePath } from '../util'
 import {
 	LocalizerItemMeta,
 	itemToLocalizerMeta,
@@ -83,7 +84,20 @@ export class FileProcessor {
 			return
 		}
 
-		const omnivoreFile = this.context.app.vault.getAbstractFileByPath(normalizedPath)
+		// 新路径找不到时，先认领「清洗前」的旧路径（全角＃ ← 半角 #）。
+		// 升级前落盘的文件名里是半角 #，不认就会同一篇文章再建一份（codex review P1）。
+		// 只认领、不改名：改名属于存量迁移，是单独的产品决定。
+		let omnivoreFile = this.context.app.vault.getAbstractFileByPath(normalizedPath)
+		if (!omnivoreFile) {
+			const legacyPath = legacyLinkUnsafePath(normalizedPath)
+			if (legacyPath) {
+				const legacyFile = this.context.app.vault.getAbstractFileByPath(legacyPath)
+				if (legacyFile instanceof TFile) {
+					log(`📄 认领清洗前的旧文件（避免重复）: ${legacyPath}`)
+					omnivoreFile = legacyFile
+				}
+			}
+		}
 
 		const writeFlag = { wrote: false }
 		let resultFile: TFile | null

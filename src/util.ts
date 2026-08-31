@@ -44,6 +44,21 @@ export const hasLinkUnsafeChar = (str: string): boolean =>
 export const replaceLinkUnsafeChars = (str: string): string =>
   str.replace(LINK_UNSAFE_CHAR_REGEX, LINK_UNSAFE_REPLACEMENT)
 
+/**
+ * 反推「本次清洗之前」的旧路径（全角＃ → 半角 #）。
+ *
+ * 只用于**认领存量文件**：升级前落盘的笔记文件名里是半角 `#`，升级后算出来的路径变成
+ * 全角＃。不认这一手的话，无 id 模式（按路径找文件）会找不到旧文件 → 同一篇文章再建
+ * 一份，用户库里凭空多出重复笔记 —— 那比坏链接更糟。
+ *
+ * 返回 null 表示没有可认领的旧路径（清洗没改动过这个名字）。
+ */
+export const legacyLinkUnsafePath = (path: string): string | null => {
+  if (!path.includes(LINK_UNSAFE_REPLACEMENT)) return null
+  const legacy = path.split(LINK_UNSAFE_REPLACEMENT).join('#')
+  return legacy === path ? null : legacy
+}
+
 export interface HighlightPoint {
   left: number
   top: number
