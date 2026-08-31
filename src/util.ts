@@ -19,6 +19,31 @@ export const ILLEGAL_CHAR_REGEX_FILE = /[<>:"/\\|?*\u0000-\u001F]/g
 // eslint-disable-next-line no-control-regex -- 同上：目录名同样要滤掉 Windows 保留的控制字符
 export const ILLEGAL_CHAR_REGEX_FOLDER = /[<>:"\\|?*\u0000-\u001F]/g
 
+/**
+ * 「文件系统合法、但 Obsidian 链接语法承载不了」的字符 → 视觉近似的全角等价物。
+ *
+ * 目前只有 **井号** 一个。真机穷举验证（2026-08-31，Obsidian 1.12/1.13，
+ * `tests/real-obsidian/probe-link-charset-matrix2.js`）：`[[目标]]` 与
+ * `[文字](目标)` 共用「按第一个井号结束文件路径」这一步，wikilink 没有任何转义机制，
+ * markdown 那边 Obsidian 用 URI 整体级解码、按规范**不还原 `%23`** —— 两条路都死。
+ * 于是文件名带井号的笔记从别的笔记根本指不回来，点一下只会新建一个空笔记
+ * （线上工单 2026-08-28：「文章的链接打开没有连上文章本身，反而创建了一个空文件」）。
+ *
+ * 其余候选字符实测**都不用换**：`^ ( ) { } % & ' ! @ $ + = ~ 反引号 . * 单个[ ]`、
+ * emoji、零宽字符、双向控制符、NBSP、窄 NBSP、BOM、NFD 组合序列、首尾空格 —— 走
+ * `metadataCache.fileToLinktext`（拿的是已规范化的 `TFile.path`）时全部能正常解析。
+ * 成对 `[[` / `]]` 只坏 wikilink，由日记链接层改写成 markdown 链接解决，不动文件名。
+ */
+export const LINK_UNSAFE_CHAR_REGEX = /#/g
+export const LINK_UNSAFE_REPLACEMENT = '\uFF03' // ＃ 全角井号
+
+/** 文件名/文件夹名里是否含「换了才能被链接指到」的字符 */
+export const hasLinkUnsafeChar = (str: string): boolean =>
+  new RegExp(LINK_UNSAFE_CHAR_REGEX.source).test(str)
+
+export const replaceLinkUnsafeChars = (str: string): string =>
+  str.replace(LINK_UNSAFE_CHAR_REGEX, LINK_UNSAFE_REPLACEMENT)
+
 export interface HighlightPoint {
   left: number
   top: number
@@ -166,15 +191,19 @@ export const unhideVaultPath = (p: string): string => {
 
 export const replaceIllegalCharsFile = (str: string): string => {
   const sanitized = unhideNameSegment(
-    removeInvisibleChars(str.replace(ILLEGAL_CHAR_REGEX_FILE, REPLACEMENT_CHAR)),
+    removeInvisibleChars(
+      replaceLinkUnsafeChars(str.replace(ILLEGAL_CHAR_REGEX_FILE, REPLACEMENT_CHAR)),
+    ),
   )
   return sanitized.trim() === '' ? EMPTY_NAME_FALLBACK : sanitized
 }
 
 export const replaceIllegalCharsFolder = (str: string): string => {
+  // 文件夹同样要换 —— 目标路径里任何一段带井号，整条链接都会在那儿被截断，
+  // 该文件夹下的每篇笔记都指不回来。
   return unhideVaultPath(
     removeInvisibleChars(
-      str.replace(ILLEGAL_CHAR_REGEX_FOLDER, REPLACEMENT_CHAR),
+      replaceLinkUnsafeChars(str.replace(ILLEGAL_CHAR_REGEX_FOLDER, REPLACEMENT_CHAR)),
     ),
   )
 }

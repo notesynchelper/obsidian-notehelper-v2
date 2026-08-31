@@ -28,6 +28,37 @@ const DIARY_ID_MARKER_PREFIX = 'notehelper:id:'
 const DIARY_ID_MARKER_REGEX = /<!-- notehelper:id:([^\s>]+) -->/g
 
 /**
+ * 会让 `[[目标]]` 词法出错的序列。真机穷举（2026-08-31，Obsidian 1.12/1.13，
+ * `tests/real-obsidian/probe-link-charset-matrix2.js`）后**只剩成对方括号**：
+ * 目标里出现 `[[` 会让外层候选作废、`]]` 会提前结束 token。
+ * 这两种改写成 markdown 链接就能解析。
+ *
+ * ⚠️ 井号**不在这里** —— 它 wikilink 和 markdown 两种写法都救不了
+ * （markdown 侧 Obsidian 用 URI 整体级解码，按规范不还原 `%23`），
+ * 只能在文件名层换掉，见 util.ts 的 `replaceLinkUnsafeChars`。
+ * 单个 `[` / `]`、`^`、`( )`、`%`、`&`、零宽字符、NBSP、NFD 等实测都安全，不要往这里加。
+ */
+const WIKILINK_UNSAFE_TARGET_REGEX = /\[\[|\]\]/
+
+/**
+ * Markdown 链接 `[文字](地址)` 的地址里，会破坏解析的字符做百分号编码。
+ * 只编码真正必要的那几个，CJK / 全角标点原样留着，编辑模式下仍然读得懂。
+ * `%` 必须第一个换，否则文件名里本来就有的 `%20` 会被 URI 解码还原成空格、指错文件。
+ * `&` 也要换：markdown 词法会先把 `&amp;` 这类实体还原成字符。
+ */
+const encodeLinkHref = (text: string): string =>
+	text
+		.replace(/%/g, '%25')
+		.replace(/&/g, '%26')
+		.replace(/ /g, '%20')
+		.replace(/#/g, '%23')
+		.replace(/\(/g, '%28')
+		.replace(/\)/g, '%29')
+		.replace(/\[/g, '%5B')
+		.replace(/\]/g, '%5D')
+		.replace(/\|/g, '%7C')
+
+/**
  * 表示待插入日记的链接项
  */
 interface DiaryLinkItem {
@@ -191,6 +222,16 @@ export class DiaryLinkProcessor {
 	}
 
 	/**
+	 * Markdown 链接 `[文字](…)` 的文字位置比 wikilink 的 alias 更脆：**单个** `]` 就会
+	 * 提前收尾。这里把成对 / 单个方括号一律换成视觉近似的全角字符。
+	 */
+	private sanitizeMarkdownLinkText(text: string): string {
+		return this.sanitizeWikiLinkAlias(text)
+			.replace(/\[/g, '\uff3b') // [ → ［
+			.replace(/\]/g, '\uff3d') // ] → ］
+	}
+
+	/**
 	 * 生成裸 wikilink（不含任何前缀 / 模板装饰）+ 截断清洗后的显示文字。
 	 * 裸链接同时是「串匹配兜底去重」的比对单位：旧版前缀形态、无 id 模式、
 	 * 换过模板的历史行，只要 [[…]] 这一段相同就算同一条。
@@ -198,20 +239,40 @@ export class DiaryLinkProcessor {
 	private buildBareLink(
 		linkItem: DiaryLinkItem,
 		diaryPath?: string,
-	): { link: string; title: string; target: string } {
+	): { link: string; title: string; target: string; legacyLink?: string } {
 		const maxLen = this.settings.diaryLinkMaxLength
 
 		let displayTitle = linkItem.displayTitle
 		if (maxLen > 0) {
 			displayTitle = truncateWithOmission(displayTitle, maxLen, '\u2026')
 		}
-		displayTitle = this.sanitizeWikiLinkAlias(displayTitle)
+		const wikiTitle = this.sanitizeWikiLinkAlias(displayTitle)
 
 		const target = this.resolveLinkTarget(linkItem, diaryPath)
-		const link = linkItem.isMessage && linkItem.anchorHeading
-			? `[[${target}#${linkItem.anchorHeading}|${displayTitle}]]`
-			: `[[${target}|${displayTitle}]]`
-		return { link, title: displayTitle, target }
+		const anchor = linkItem.isMessage && linkItem.anchorHeading ? linkItem.anchorHeading : ''
+		const wikiLink = anchor
+			? `[[${target}#${anchor}|${wikiTitle}]]`
+			: `[[${target}|${wikiTitle}]]`
+
+		// 目标里出现成对方括号 → wikilink 词法会错位，改写成 markdown 链接。
+		// 只动链接写法，不动文件名、不碰存量笔记。
+		// （markdown 不是万能兜底：BOM 之类的字符反而是 wikilink 能解析、markdown 不能，
+		//   所以这里是「默认 wikilink，仅此一种情况降级」，不要反过来。）
+		if (!WIKILINK_UNSAFE_TARGET_REGEX.test(target)) {
+			return { link: wikiLink, title: wikiTitle, target }
+		}
+
+		const mdTitle = this.sanitizeMarkdownLinkText(displayTitle)
+		const href = anchor
+			? `${encodeLinkHref(`${target}.md`)}#${encodeLinkHref(anchor)}`
+			: encodeLinkHref(`${target}.md`)
+		return {
+			link: `[${mdTitle}](${href})`,
+			title: mdTitle,
+			target,
+			// 旧版对同一条写的就是 wikiLink —— 交给去重兜底，避免升级后重复插一行
+			legacyLink: wikiLink,
+		}
 	}
 
 	/**
@@ -250,8 +311,8 @@ export class DiaryLinkProcessor {
 	private renderLinkEntry(
 		linkItem: DiaryLinkItem,
 		diaryPath?: string,
-	): { text: string; bareLink: string } {
-		const { link, title, target } = this.buildBareLink(linkItem, diaryPath)
+	): { text: string; bareLink: string; legacyBareLink?: string } {
+		const { link, title, target, legacyLink } = this.buildBareLink(linkItem, diaryPath)
 		const view = buildDiaryLinkView({
 			item: linkItem.item,
 			link,
@@ -278,7 +339,7 @@ export class DiaryLinkProcessor {
 		if (text === null) {
 			text = renderDiaryLinkTemplate(DEFAULT_DIARY_LINK_TEMPLATE, view)
 		}
-		return { text, bareLink: link }
+		return { text, bareLink: link, legacyBareLink: legacyLink }
 	}
 
 	private reportTemplateFailure(error: unknown): void {
@@ -423,8 +484,11 @@ export class DiaryLinkProcessor {
 		for (const link of this.sortLinks(targets, plan.order)) {
 			if (existingIds.has(link.item.id)) continue
 			const entry = this.renderLinkEntry(link, diaryFile.path)
-			// 串匹配兜底只看裸 [[…]]：旧版前缀形态、无 id 模式、换过模板的历史行都能认出来
+			// 串匹配兜底只看裸链接：旧版前缀形态、无 id 模式、换过模板的历史行都能认出来。
+			// legacyBareLink = 升级前对同一条写的 [[…]]（目标含 # 之类时才有），一并比对，
+			// 免得换成 Markdown 写法之后把历史行当成新链接又插一遍。
 			if (scopeContent.includes(entry.bareLink)) continue
+			if (entry.legacyBareLink && scopeContent.includes(entry.legacyBareLink)) continue
 			// id 标记挂在渲染结果最后一个非空行的末尾（单行模板 = 与旧版同形；模板末尾的空行留在标记后面）
 			newLinks.push(
 				noMarkers

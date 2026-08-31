@@ -6,6 +6,7 @@ import {
   formatDate,
   formatHighlightQuote,
   getHighlightLocation,
+  hasLinkUnsafeChar,
   removeFrontMatterFromContent,
   siteNameFromUrl,
   snakeToCamelCase,
@@ -902,6 +903,25 @@ export const renderItemContent = (
     }
   }
 
+  // 标题里带井号时文件名会被换成全角＃（见 util.ts replaceLinkUnsafeChars），
+  // 而默认模板下**标题只存在于文件名**（正文模板是 {{{content}}}、前置元数据也没有 title），
+  // 换掉就等于「C# 入门」再也搜不到。把原标题登记成别名补回来：
+  // 别名不参与链接解析，但参与全文搜索 / 快速切换器 / 链接补全，且从补全里选中后
+  // 插入的是「真实文件名 + 别名显示」，链接照样点得开（2026-08-31 真机验证）。
+  // 只在标题真的含井号时才加，普通标题一个字节都不动。
+  if (typeof item.title === 'string' && hasLinkUnsafeChar(item.title)) {
+    const existing = frontMatter.aliases
+    const list = Array.isArray(existing)
+      ? existing.slice()
+      : typeof existing === 'string' && existing.trim()
+        ? [existing]
+        : []
+    if (!list.some((a) => typeof a === 'string' && a === item.title)) {
+      list.push(item.title)
+    }
+    frontMatter = { ...frontMatter, aliases: list }
+  }
+
   // Build content string based on template
   const content = Mustache.render(safeTemplate, articleView)
   let contentWithoutFrontMatter = removeFrontMatterFromContent(content)
@@ -1046,8 +1066,34 @@ export const extractMessagePlainText = (item: Item): string => {
  * 用于日记链接的锚点 —— 锚点需要稳定，必须保持 10 字上限
  */
 export const generateMessageHeading = (item: Item): string => {
-  const summary = extractMessagePlainText(item).slice(0, 10)
+  // 先 NFC 再截断：从组合字符序列（如 e + 组合锐音符）中间切开会得到半个字
+  const plain = extractMessagePlainText(item)
+  const normalized = typeof plain.normalize === 'function' ? plain.normalize('NFC') : plain
+  const summary = sanitizeAnchorText(normalized.slice(0, 10))
   return summary || '消息'
+}
+
+/**
+ * 清洗消息摘要 —— 它同时是两个东西：合并文件里那行 `#### 摘要` 标题，
+ * 和日记双链里的锚点 `[[合并文件#摘要]]`。两边同源，所以在这里一起清洗才能保证对得上。
+ *
+ * 真机穷举（2026-08-31，`tests/real-obsidian/probe-anchor-charset-matrix.js`）锚点位置
+ * 只有三类会坏：
+ *   井号 —— 被当成多级标题分隔（用户在转发附言里写 `#标签` 时摘要就以它开头）
+ *   竖线 —— 第一个竖线会把后面全当成显示别名，锚点在那儿就断了
+ *   成对方括号 —— wikilink 词法提前结束
+ * 其余（`*` 反引号 `_` `~~` `^` 冒号 emoji 零宽 NBSP 首尾空格…）实测全部安全，不要乱换。
+ *
+ * 另外统一 NFC：Obsidian 会把链接文本规范化成 NFC，而标题缓存保留源文本的形式；
+ * 两边都先转 NFC 就不会出现「看着一样却对不上」。
+ */
+export const sanitizeAnchorText = (text: string): string => {
+  const normalized = typeof text.normalize === 'function' ? text.normalize('NFC') : text
+  return normalized
+    .replace(/#/g, '＃')         // # → ＃
+    .replace(/\|/g, '｜')         // | → ｜
+    .replace(/\[\[/g, '［［') // [[ → ［［
+    .replace(/\]\]/g, '］］') // ]] → ］］
 }
 
 /** 聊天记录（多选转发）里每条内层消息前的时间戳：**yyyy/MM/dd HH:mm:ss** */
