@@ -1416,6 +1416,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             fragment.createEl('br'),
             t('settings.advanced.assistantTemplate.varId'),
             fragment.createEl('br'),
+            t('settings.advanced.assistantTemplate.varLabels'),
+            fragment.createEl('br'),
             t('settings.advanced.assistantTemplate.functionsHint'),
             fragment.createEl('br'),
             fragment.createEl('br'),
@@ -1430,6 +1432,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             t('settings.advanced.assistantTemplate.example4'),
             fragment.createEl('br'),
             t('settings.advanced.assistantTemplate.example5'),
+            fragment.createEl('br'),
+            t('settings.advanced.assistantTemplate.example6'),
             fragment.createEl('br'),
             fragment.createEl('a', {
               text: t('settings.advanced.assistantTemplate.debugLink'),

@@ -542,6 +542,25 @@ function oneLineFunc() {
   }
 }
 
+/**
+ * indent：把多行取值的每一行都缩进 4 个空格（空行保持空行，首尾空行去掉）。
+ * 给「时间一行 + 正文缩进为它的下一级」这种日记写法用：
+ *   - {{{timeSavedShort}}}
+ *   {{#indent}}{{{content}}}{{/indent}}
+ * 缩进后的正文属于上面那个列表项——Thino 这类流式笔记按列表项取条目，整段（含空行隔开的多段）都能读到，
+ * Obsidian 里时间行还能折叠；正文本身不折行、不塞 <br>，笔记直接打开也好看（用户拒绝了 oneLine 折成一行的方案）。
+ * 老 Memos 1.x 只读列表项那一行，这种写法它读不到，要它读得到仍用 oneLine。
+ */
+function indentFunc() {
+  return function (text: string, render: (text: string) => string) {
+    const lines = render(text).replace(/\r\n?/g, '\n').split('\n')
+    // 去掉首尾的空行（不是空白：中间的空行保留，它们是段落分隔）
+    while (lines.length && lines[0].trim() === '') lines.shift()
+    while (lines.length && lines[lines.length - 1].trim() === '') lines.pop()
+    return lines.map((l) => (l.trim() === '' ? '' : `    ${l}`)).join('\n')
+  }
+}
+
 export const functionMap: FunctionMap = {
   lowerCase,
   upperCase,
@@ -550,6 +569,7 @@ export const functionMap: FunctionMap = {
   mapValue: mapValueFunc,
   extract: extractFunc,
   oneLine: oneLineFunc,
+  indent: indentFunc,
 }
 
 /**
@@ -1195,6 +1215,9 @@ const buildMessageView = (
   ...buildDateView(item, dateSavedFormat),
   savedAt: item.savedAt,
   heading: generateMessageHeading(item),  // 消息摘要标题
+  // 消息上的标签（转发留言里的 #标签 由服务端写进 labels）：{{#labels}}#{{{name}}} {{/labels}}
+  // 就能把标签放到时间行上；与文章模板同一份 renderLabels（空格 → 下划线）
+  labels: renderLabels(item.labels || undefined),
   ...functionMap,
 })
 
