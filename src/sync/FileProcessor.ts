@@ -2,7 +2,8 @@ import { Item } from '@omnivore-app/api'
 import { normalizePath, TFile } from 'obsidian'
 import { SyncContext } from './SyncContext'
 import { log, logError } from '../logger'
-import { legacyLinkUnsafePath } from '../util'
+import { findLegacyClaimFile } from './legacyPathClaim'
+import { extractFrontmatterId } from '../util'
 import {
 	LocalizerItemMeta,
 	itemToLocalizerMeta,
@@ -33,6 +34,12 @@ import { suppressTemplaterTriggerOnCreate } from './templaterRelay'
 export interface DualCopyOptions {
 	/** true = 本次是双写的独立副本 */
 	dualStandaloneCopy?: boolean
+	/**
+	 * 「升级前」那条旧路径（由调用方从清洗【前】的原文算出来，见 legacyPathClaim.ts）。
+	 * 新路径上没有文件时先认领它，避免同一篇文章再建一份。
+	 * undefined = 本次清洗没换过字符，没有旧路径可认领。
+	 */
+	legacyPath?: string
 }
 
 export class FileProcessor {
@@ -89,13 +96,14 @@ export class FileProcessor {
 		// 只认领、不改名：改名属于存量迁移，是单独的产品决定。
 		let omnivoreFile = this.context.app.vault.getAbstractFileByPath(normalizedPath)
 		if (!omnivoreFile) {
-			const legacyPath = legacyLinkUnsafePath(normalizedPath)
-			if (legacyPath) {
-				const legacyFile = this.context.app.vault.getAbstractFileByPath(legacyPath)
-				if (legacyFile instanceof TFile) {
-					log(`📄 认领清洗前的旧文件（避免重复）: ${legacyPath}`)
-					omnivoreFile = legacyFile
-				}
+			const legacyFile = findLegacyClaimFile(
+				this.context.app,
+				normalizedPath,
+				options.legacyPath,
+			)
+			if (legacyFile) {
+				log(`📄 认领清洗前的旧文件（避免重复）: ${legacyFile.path}`)
+				omnivoreFile = legacyFile
 			}
 		}
 
@@ -339,11 +347,8 @@ export class FileProcessor {
 		}
 	}
 
-	/**
-	 * 从文件内容中提取ID
-	 */
+	/** 从文件内容中提取 ID（与合并路径共用同一份判据，见 util.extractFrontmatterId） */
 	private extractIdFromContent(content: string): string | null {
-		const idMatch = content.match(/^---\r?\n(?:[\s\S]*?)^id:\s*(.+?)\s*$/m)
-		return idMatch ? idMatch[1].trim() : null
+		return extractFrontmatterId(content)
 	}
 }

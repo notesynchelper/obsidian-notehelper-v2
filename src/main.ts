@@ -34,6 +34,7 @@ import {
   escapeContentHashtags,
   formatDate,
   getQueryFromFilter,
+  hasMergeDigestMarker,
   parseDateTime,
   replaceIllegalCharsFile,
   replaceIllegalCharsFolder,
@@ -51,6 +52,7 @@ import { AttachmentLocalizer, AttachmentProcessOptions, isWeComFileMessage, extr
 import { metaFromFrontmatter } from './common/localizerItemMeta'
 import { adjustSyncCursor, advanceSyncCursor, shouldMarkInitialSyncCompleted } from './syncCursorAdjust'
 import { SyncContext } from './sync/SyncContext'
+import { findLegacyClaimFile, legacyPathOf } from './sync/legacyPathClaim'
 import { latestSyncCursor, isCursorCovered } from './sync/cursorDedupe'
 import { SyncNoticeManager, type SyncNoticeReminder } from './sync/SyncNoticeManager'
 import {
@@ -1271,23 +1273,29 @@ export default class OmnivorePlugin extends Plugin {
     folderDateFormat: string
     filenameTemplate: string
     filenameDateFormat: string
-    mergeTargetPath: string
+    /**
+     * 本轮合并副本会落在哪些路径上（认领到的旧路径 + 按当前配置算出来的新路径）。
+     * 两条都要避让：只比认领后的那条时，下一轮 path-first 分支会把这里刚建出来的
+     * 独立笔记当成合并文件（codex 阻断 #2）。
+     */
+    mergeTargetPaths: string[]
     fileProcessor: FileProcessor
     skipByCursor: boolean
   }): Promise<void> {
-    const { item, content, mergeTargetPath, fileProcessor } = params
+    const { item, content, mergeTargetPaths, fileProcessor } = params
     // 「无 id」模式：item 已被最新设备游标覆盖 → 其它设备已同步过，文件会随库同步到达，
     // 跳过写盘防重复（与非合并路径同一条规则）。
     if (params.skipByCursor) return
 
-    const folderName = replaceIllegalCharsFolder(
-      normalizePath(render(item, params.folderTemplate, params.folderDateFormat, { pathSafe: true })),
+    const rawFolder = normalizePath(
+      render(item, params.folderTemplate, params.folderDateFormat, { pathSafe: true }),
     )
-    const customFilename = replaceIllegalCharsFile(
-      renderFilename(item, params.filenameTemplate, params.filenameDateFormat),
-    )
+    const rawFilename = renderFilename(item, params.filenameTemplate, params.filenameDateFormat)
+    const folderName = replaceIllegalCharsFolder(rawFolder)
+    const customFilename = replaceIllegalCharsFile(rawFilename)
     const normalizedPath = normalizePath(`${folderName}/${customFilename}.md`)
-    if (normalizedPath === mergeTargetPath) {
+    const legacyPath = legacyPathOf(rawFolder, rawFilename, normalizedPath)
+    if (mergeTargetPaths.includes(normalizedPath)) {
       // 用户把文章模板配成了和消息合并文件同名 —— 写下去等于用单篇正文覆盖整份合并文件。
       // 数据安全优先：放弃独立副本，合并副本照常。
       logError(`⚠️ 双写跳过：独立副本与合并文件同路径 ${normalizedPath}（请调整文章文件名模板）`)
@@ -1296,7 +1304,43 @@ export default class OmnivorePlugin extends Plugin {
     await this.ensureFolderExists(folderName)
     await fileProcessor.process(item, normalizedPath, content, folderName, customFilename, {
       dualStandaloneCopy: true,
+      legacyPath,
     })
+  }
+
+  /**
+   * 认领「升级前」那份旧合并文件（全角＃ ← 半角 #）。
+   *
+   * 🔴 只认领有【正向证据】说明它就是合并文件的：启动索引/本轮已把它登记成合并文件，
+   * 或者它顶层 frontmatter 带 `syncedIds`（只有合并 digest 才写）。
+   * **绝不能**拿「没有 id」当证据 —— 「不写 id」模式下的独立笔记同样没有 id；
+   * 用户从「不合并」切到「合并/双写」时，旧路径上很可能就坐着这样一篇独立笔记，
+   * 把它标成合并文件再往里追加消息是不可逆的内容搅混（codex 阻断 #1，两轮）。
+   * 认不出来就放弃认领：多建一个文件是可恢复的，混写不是。
+   */
+  private async claimLegacyMergeFile(
+    normalizedPath: string,
+    legacyPath: string | undefined,
+    syncContext: SyncContext,
+  ): Promise<TFile | null> {
+    const legacyFile = findLegacyClaimFile(this.app, normalizedPath, legacyPath)
+    if (!legacyFile) return null
+    if (!syncContext.isMergeFilePath(legacyFile.path)) {
+      let content = ''
+      try {
+        content = await this.app.vault.read(legacyFile)
+      } catch (error) {
+        logError(`⚠️ 旧合并文件读不出来，本次不认领: ${legacyFile.path}`, error)
+        return null
+      }
+      if (!hasMergeDigestMarker(content)) {
+        logError(`⚠️ 旧路径上不是合并文件（无 syncedIds），不认领: ${legacyFile.path}`)
+        return null
+      }
+    }
+    log(`📄 认领清洗前的旧合并文件（避免当天历史被劈两半）: ${legacyFile.path}`)
+    syncContext.markMergeFile(legacyFile)
+    return legacyFile
   }
 
   /**
@@ -1309,6 +1353,12 @@ export default class OmnivorePlugin extends Plugin {
     item: Item,
     dualWrite = false,
     initialContent = '',
+    /**
+     * 「升级前」那条旧合并文件路径（由调用方从清洗前原文算出，见 legacyPathOf）。
+     * 不认它的话，`singleFileName` 含 `#` 的用户升级后当天历史会被劈成两半
+     *（codex review P1 / 2026-09-03）。
+     */
+    legacyPath?: string,
   ): Promise<TFile | null> {
     // 按路径查找
     if (omnivoreFile instanceof TFile) {
@@ -1330,6 +1380,13 @@ export default class OmnivorePlugin extends Plugin {
       syncContext.markMergeFile(indexed)
       return indexed
     }
+    // 新路径与 id 索引都落空 → 先认领「清洗前」那份旧合并文件（全角＃ ← 半角 #）。
+    const legacyClaimed = await this.claimLegacyMergeFile(
+      normalizedPath,
+      legacyPath,
+      syncContext,
+    )
+    if (legacyClaimed) return legacyClaimed
     // 文件不存在：按「合并文件模板」落初始内容（未配置模板时 initialContent=''，
     // 等于历史的空文件），再让 processBatch 统一排序写入。
     // P0 加固：预挂 Templater trigger_on_file_creation 抑制条目，防它按全文
@@ -1637,7 +1694,9 @@ export default class OmnivorePlugin extends Plugin {
           // 🆕 容错处理：单篇文章失败不中断整体同步
           try {
             // 对于企微消息,从标题提取日期用于文件夹路径
-            let folderName: string
+            // 清洗【前】的原文留一份：升级前那条旧路径要从它重算，
+            // 不能拿清洗后的路径把全角＃换回半角（见 sync/legacyPathClaim.ts）。
+            let rawFolderPath: string
             if (isSingleFile && item.title.startsWith('同步助手_')) {
               const titleParts = item.title.split('_')
               if (titleParts.length >= 2 && titleParts[1].length === 8) {
@@ -1654,19 +1713,20 @@ export default class OmnivorePlugin extends Plugin {
                 ...item,
                 savedAt: isoDate, // 传递 ISO 格式，让 render 函数根据 folderDateFormat 格式化
               }
-              folderName = replaceIllegalCharsFolder(
-                normalizePath(render(tempItem, effectiveMessageFolder, folderDateFormat, { pathSafe: true })),
+              rawFolderPath = normalizePath(
+                render(tempItem, effectiveMessageFolder, folderDateFormat, { pathSafe: true }),
               )
             } else {
-              folderName = replaceIllegalCharsFolder(
-                normalizePath(render(item, effectiveMessageFolder, folderDateFormat, { pathSafe: true })),
+              rawFolderPath = normalizePath(
+                render(item, effectiveMessageFolder, folderDateFormat, { pathSafe: true }),
               )
             }
           } else {
-            folderName = replaceIllegalCharsFolder(
-              normalizePath(render(item, folder, folderDateFormat, { pathSafe: true })),
+            rawFolderPath = normalizePath(
+              render(item, folder, folderDateFormat, { pathSafe: true }),
             )
           }
+          const folderName = replaceIllegalCharsFolder(rawFolderPath)
           // log(`🔧 文件夹名称: ${folderName}`)
           await this.ensureFolderExists(folderName)
           // 双保险-元数据层：通过 description 识别企微文件消息，提前下载附件
@@ -1727,9 +1787,7 @@ export default class OmnivorePlugin extends Plugin {
           const content = renderFor(shouldMergeIntoSingleFile)
           // log(`🔧 内容渲染完成`)
           // use the custom filename
-          let customFilename = replaceIllegalCharsFile(
-            renderFilename(item, filename, filenameDateFormat),
-          )
+          let rawFilename = renderFilename(item, filename, filenameDateFormat)
 
           // 合并文件模板的 {{{date}}}：默认取 item.savedAt，企微消息标题里带
           // yyyyMMdd 时（下方分支）改用那个日期 —— 与合并文件名里的日期同源。
@@ -1757,16 +1815,15 @@ export default class OmnivorePlugin extends Plugin {
                   ...item,
                   savedAt: isoDate, // 传递 ISO 格式，让 render 函数根据 singleFileDateFormat 格式化
                 }
-                customFilename = replaceIllegalCharsFile(
-                  renderFilename(tempItem, singleFileTemplate, singleFileDateFormat),
-                )
-                // log(`🔧 企微消息使用单文件模板: ${customFilename}`)
+                rawFilename = renderFilename(tempItem, singleFileTemplate, singleFileDateFormat)
               }
             }
           }
 
+          const customFilename = replaceIllegalCharsFile(rawFilename)
           const pageName = `${folderName}/${customFilename}.md`
           const normalizedPath = normalizePath(pageName)
+          const legacyPath = legacyPathOf(rawFolderPath, rawFilename, normalizedPath)
           // log(`🔧 准备创建/更新文件: ${normalizedPath}`)
           const omnivoreFile =
             this.app.vault.getAbstractFileByPath(normalizedPath)
@@ -1783,7 +1840,9 @@ export default class OmnivorePlugin extends Plugin {
               // MergeProcessor）。仍记 success 让游标正常前推。
               syncContext.successTracker.recordSuccess(item.id)
             } else {
-              await fileProcessor.process(item, normalizedPath, content, folderName, customFilename)
+              await fileProcessor.process(item, normalizedPath, content, folderName, customFilename, {
+                legacyPath,
+              })
             }
           } else {
             // 合并模式：收集到 mergeGroups，Phase 2 统一批量处理。
@@ -1801,7 +1860,8 @@ export default class OmnivorePlugin extends Plugin {
               }
             }
             const mergeTarget = await this.resolveOrCreateMergeTarget(
-              omnivoreFile, normalizedPath, syncContext, item, dualWrite, mergeFileInitial
+              omnivoreFile, normalizedPath, syncContext, item, dualWrite, mergeFileInitial,
+              legacyPath,
             )
             if (mergeTarget) {
               const group = mergeGroups.get(mergeTarget.path)
@@ -1819,7 +1879,7 @@ export default class OmnivorePlugin extends Plugin {
                     folderDateFormat,
                     filenameTemplate: filename,
                     filenameDateFormat,
-                    mergeTargetPath: mergeTarget.path,
+                    mergeTargetPaths: [mergeTarget.path, normalizedPath],
                     fileProcessor,
                     skipByCursor:
                       omitIdActive && isCursorCovered(item.updatedAt || item.savedAt, noIdLatestCursor),

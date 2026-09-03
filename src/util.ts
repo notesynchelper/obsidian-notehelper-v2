@@ -6,6 +6,7 @@ import { parseYaml } from 'obsidian'
 import outOfCharacter from 'out-of-character'
 import { HighlightColorMapping, HighlightManagerId } from './settings'
 import { logError } from './logger'
+import { BLOOM_ENCODED_LEN } from './compressIds'
 
 export const DATE_FORMAT_W_OUT_SECONDS = "yyyy-MM-dd'T'HH:mm"
 export const DATE_FORMAT = `${DATE_FORMAT_W_OUT_SECONDS}:ss`
@@ -45,18 +46,66 @@ export const replaceLinkUnsafeChars = (str: string): string =>
   str.replace(LINK_UNSAFE_CHAR_REGEX, LINK_UNSAFE_REPLACEMENT)
 
 /**
- * 反推「本次清洗之前」的旧路径（全角＃ → 半角 #）。
+ * 文件名/文件夹名清洗的可选项。
  *
- * 只用于**认领存量文件**：升级前落盘的笔记文件名里是半角 `#`，升级后算出来的路径变成
- * 全角＃。不认这一手的话，无 id 模式（按路径找文件）会找不到旧文件 → 同一篇文章再建
- * 一份，用户库里凭空多出重复笔记 —— 那比坏链接更糟。
+ * `keepLinkUnsafeChars` = 跳过「半角 # → 全角＃」这一步，**只用来算「升级前那条旧路径」**
+ *（见 sync/legacyPathClaim.ts）。落盘路径一律不要传这个选项。
  *
- * 返回 null 表示没有可认领的旧路径（清洗没改动过这个名字）。
+ * 🔴 为什么旧路径必须从清洗【前】的原文重算，而不是拿新路径把全角＃换回半角：
+ * 标题里本来就带全角＃的文章根本没被清洗改动过，反推出来的是一条**别人的**路径；
+ * 那个文件若没有 frontmatter id，会被 handleExistingFile 整份覆写
+ *（用户自己的 `C#入门.md` 被一篇文章顶掉，codex review P1 / 2026-09-03）。
  */
-export const legacyLinkUnsafePath = (path: string): string | null => {
-  if (!path.includes(LINK_UNSAFE_REPLACEMENT)) return null
-  const legacy = path.split(LINK_UNSAFE_REPLACEMENT).join('#')
-  return legacy === path ? null : legacy
+/** 取笔记顶层 frontmatter 里的 `id`（本插件写单篇笔记时落的那个） */
+export const extractFrontmatterId = (content: string): string | null => {
+  const idMatch = content.match(/^---\r?\n(?:[\s\S]*?)^id:\s*(.+?)\s*$/m)
+  return idMatch ? idMatch[1].trim() : null
+}
+
+/**
+ * 这份内容是不是一份「合并 digest」？
+ *
+ * 正向证据 = 顶层 frontmatter 里有**本插件写的合并指纹**：
+ *   • `syncedIds`：44 字符 base64url 的 Bloom（与 compressIds.readSyncedFilter 同一判据）；或
+ *   • 旧格式 `messages: [{id: …}]` 数组。
+ *
+ * 🔴 三条都不能松：
+ *  1. 不能反过来拿「没有 id」当证据 —— 「不写 id」模式下的**独立笔记**同样没有 id；
+ *  2. 也不能只看「有没有 syncedIds 这个键」—— 用户的前置元数据模板可以写任意字段，
+ *     一篇 `syncedIds: 我的标签` 的独立笔记会被误认成合并文件；
+ *  3. frontmatter 解析失败一律判否 —— 宁可漏认（多建一个文件，可恢复），
+ *     也绝不误认（往独立笔记里追加消息，不可逆）。codex 阻断，三轮。
+ */
+export const hasMergeDigestMarker = (content: string): boolean => {
+  const block = content.match(/^---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/)
+  if (!block) return false
+  let parsed: unknown
+  try {
+    parsed = parseYaml(block[1])
+  } catch {
+    return false
+  }
+  if (!parsed || typeof parsed !== 'object') return false
+  const fm = parsed as Record<string, unknown>
+  const syncedIds = fm.syncedIds
+  if (
+    typeof syncedIds === 'string' &&
+    syncedIds.length === BLOOM_ENCODED_LEN &&
+    /^[A-Za-z0-9_-]+$/.test(syncedIds)
+  ) {
+    return true
+  }
+  // 旧格式：messages 数组，元素是带 id 的对象
+  return (
+    Array.isArray(fm.messages) &&
+    fm.messages.some(
+      (m) => m != null && typeof m === 'object' && typeof (m as Record<string, unknown>).id === 'string',
+    )
+  )
+}
+
+export interface IllegalCharOptions {
+  keepLinkUnsafeChars?: boolean
 }
 
 export interface HighlightPoint {
@@ -204,23 +253,29 @@ export const unhideVaultPath = (p: string): string => {
   return p.split('/').map(unhideNameSegment).join('/')
 }
 
-export const replaceIllegalCharsFile = (str: string): string => {
-  const sanitized = unhideNameSegment(
-    removeInvisibleChars(
-      replaceLinkUnsafeChars(str.replace(ILLEGAL_CHAR_REGEX_FILE, REPLACEMENT_CHAR)),
-    ),
-  )
+export const replaceIllegalCharsFile = (
+  str: string,
+  options?: IllegalCharOptions,
+): string => {
+  const illegalReplaced = str.replace(ILLEGAL_CHAR_REGEX_FILE, REPLACEMENT_CHAR)
+  const linkSafe = options?.keepLinkUnsafeChars
+    ? illegalReplaced
+    : replaceLinkUnsafeChars(illegalReplaced)
+  const sanitized = unhideNameSegment(removeInvisibleChars(linkSafe))
   return sanitized.trim() === '' ? EMPTY_NAME_FALLBACK : sanitized
 }
 
-export const replaceIllegalCharsFolder = (str: string): string => {
+export const replaceIllegalCharsFolder = (
+  str: string,
+  options?: IllegalCharOptions,
+): string => {
   // 文件夹同样要换 —— 目标路径里任何一段带井号，整条链接都会在那儿被截断，
   // 该文件夹下的每篇笔记都指不回来。
-  return unhideVaultPath(
-    removeInvisibleChars(
-      replaceLinkUnsafeChars(str.replace(ILLEGAL_CHAR_REGEX_FOLDER, REPLACEMENT_CHAR)),
-    ),
-  )
+  const illegalReplaced = str.replace(ILLEGAL_CHAR_REGEX_FOLDER, REPLACEMENT_CHAR)
+  const linkSafe = options?.keepLinkUnsafeChars
+    ? illegalReplaced
+    : replaceLinkUnsafeChars(illegalReplaced)
+  return unhideVaultPath(removeInvisibleChars(linkSafe))
 }
 
 export function formatDate(date: string, format: string): string {

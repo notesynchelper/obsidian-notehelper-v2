@@ -50,7 +50,7 @@ import { TFile as MockTFileType } from 'obsidian'
 import { DEFAULT_SETTINGS, OmnivoreSettings, DiaryLinkType, DiaryWritePosition } from '../src/settings/index'
 import { DiaryLinkProcessor } from '../src/sync/DiaryLinkProcessor'
 import type { DailyNoteResolver } from '../src/sync/DailyNoteResolver'
-import { replaceIllegalCharsFile, replaceIllegalCharsFolder, legacyLinkUnsafePath } from '../src/util'
+import { replaceIllegalCharsFile, replaceIllegalCharsFolder } from '../src/util'
 import { generateMessageHeading, sanitizeAnchorText } from '../src/settings/template'
 
 const MockTFile = MockTFileType as unknown as new (path: string) => { path: string; basename: string }
@@ -120,20 +120,6 @@ describe('文件名层：只把 # 换成全角，别的一个都不动', () => {
 
 	it('文件系统非法字符照旧换成连字符（无回归）', () => {
 		expect(replaceIllegalCharsFile('a<b>c:d"e/f\\g|h?i*j')).toBe('a-b-c-d-e-f-g-h-i-j')
-	})
-})
-
-describe('存量认领：升级后别把同一篇文章再建一份（codex review P1）', () => {
-	it('新路径能反推出清洗前的旧路径（全角＃ → 半角 #）', () => {
-		expect(legacyLinkUnsafePath('articles/科技爱好者周刊＃410.md')).toBe('articles/科技爱好者周刊#410.md')
-	})
-
-	it('一条路径里的多个＃都要还原', () => {
-		expect(legacyLinkUnsafePath('a＃b/c＃d.md')).toBe('a#b/c#d.md')
-	})
-
-	it('名字没被清洗改动过 → 没有旧路径可认领，返回 null（不要去猜）', () => {
-		expect(legacyLinkUnsafePath('articles/一篇正常的文章.md')).toBeNull()
 	})
 })
 
