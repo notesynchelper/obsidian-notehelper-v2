@@ -1,10 +1,5 @@
 import { Notice } from 'obsidian'
 
-/** 同步状态 Notice 的常规自动隐藏时长 */
-const STATUS_HIDE_MS = 3000
-/** 附带升级提醒行时的自动隐藏时长（给用户留出阅读/点击时间） */
-const STATUS_HIDE_WITH_REMINDER_MS = 12000
-
 /**
  * 弱升级提醒：附加在同步状态 Notice 下方的一行可点击文字。
  * 点击后由 onClick 打开 Obsidian 第三方插件页，由用户自行完成升级。
@@ -13,6 +8,20 @@ export interface SyncUpdateReminder {
   text: string
   onClick: () => void
 }
+
+/**
+ * 同步完成 Notice 上追加的第二行（会员续费提醒）。
+ * text 由 vip/renewalReminder 算好，onClick 弹出续费二维码窗口。
+ */
+export interface SyncNoticeReminder {
+  text: string
+  onClick: () => void
+}
+
+/** 带提醒（升级 / 续费）时 Notice 的停留时长：3 秒来不及点，给到 10 秒 */
+export const REMINDER_NOTICE_DURATION_MS = 10000
+/** 不带提醒时的原有停留时长 */
+export const PLAIN_NOTICE_DURATION_MS = 3000
 
 export class SyncNoticeManager {
   private mainNotice: Notice | null = null
@@ -26,6 +35,8 @@ export class SyncNoticeManager {
   private statusHideTimer: number | null = null
   private reminder: SyncUpdateReminder | null = null
   private reminderAttachedTo: Notice | null = null
+  /** 本轮终态是否带了续费提醒行（影响自动隐藏时长） */
+  private hasRenewalReminder = false
 
   /** Create the main progress notice, fill first block */
   startSync(): void {
@@ -57,23 +68,25 @@ export class SyncNoticeManager {
     }
   }
 
-  /** Fill all blocks, show success message, auto-hide after a short delay */
-  completeSync(successCount: number): void {
+  /**
+   * Fill all blocks, show success message, auto-hide after 3s
+   * （带提醒时改为 10s —— 第二行要能点得到）
+   */
+  completeSync(successCount: number, reminder?: SyncNoticeReminder): void {
     this.filledBlocks = this.totalBlocks
     if (this.mainNotice) {
-      this.mainNotice.setMessage(
-        this.renderProgressBar(`同步完成！${successCount} 篇文章`)
-      )
-      this.finishStatus(this.mainNotice)
+      const line = this.renderProgressBar(`同步完成！${successCount} 篇文章`)
+      this.mainNotice.setMessage(this.composeMessage(line, reminder))
+      this.finishStatus(this.mainNotice, reminder)
     }
     this.mainNotice = null
   }
 
   /** Show "no new articles" for empty sync result */
-  showNoArticles(): void {
+  showNoArticles(reminder?: SyncNoticeReminder): void {
     if (this.mainNotice) {
-      this.mainNotice.setMessage('没有新文章需要同步')
-      this.finishStatus(this.mainNotice)
+      this.mainNotice.setMessage(this.composeMessage('没有新文章需要同步', reminder))
+      this.finishStatus(this.mainNotice, reminder)
       this.mainNotice = null
     }
   }
@@ -88,11 +101,14 @@ export class SyncNoticeManager {
   }
 
   /**
-   * 终态状态渲染完成后的收尾：挂提醒行（如有）+ 调度自动隐藏。
+   * 终态状态渲染完成后的收尾：挂升级提醒行（如有）+ 调度自动隐藏。
    * 必须在最后一次 setMessage 之后调用（setMessage 会清掉 noticeEl 的子节点）。
+   *
+   * renewalReminder 只用来决定停留时长——它已经由 composeMessage 拼进消息里了。
    */
-  private finishStatus(notice: Notice): void {
+  private finishStatus(notice: Notice, renewalReminder?: SyncNoticeReminder): void {
     this.statusNotice = notice
+    this.hasRenewalReminder = !!renewalReminder
     this.reminderAttachedTo = null
     this.attachReminderToStatus()
     this.scheduleStatusHide()
@@ -102,7 +118,10 @@ export class SyncNoticeManager {
     if (!this.statusNotice) return
     if (this.statusHideTimer) window.clearTimeout(this.statusHideTimer)
     const notice = this.statusNotice
-    const ms = this.reminder ? STATUS_HIDE_WITH_REMINDER_MS : STATUS_HIDE_MS
+    const ms =
+      this.reminder || this.hasRenewalReminder
+        ? REMINDER_NOTICE_DURATION_MS
+        : PLAIN_NOTICE_DURATION_MS
     this.statusHideTimer = window.setTimeout(() => {
       notice.hide()
       if (this.statusNotice === notice) this.statusNotice = null
@@ -125,6 +144,35 @@ export class SyncNoticeManager {
     this.reminderAttachedTo = this.statusNotice
     // 有提醒行时延长展示时间
     this.scheduleStatusHide()
+  }
+
+  /**
+   * 没有续费提醒时保持原样（纯字符串，零回归）；有提醒时拼成两行 DOM，
+   * 第二行是可点击的续费入口。
+   *
+   * 点击时 stopPropagation：Notice 自带「点一下就关」，不拦住的话弹窗打开的同一次
+   * 点击会连带把 Notice 关掉——功能上没问题，但用户会看到提醒「一点就没了」，
+   * 分不清是点中了还是误关。这里让关闭交给超时/再次点击。
+   */
+  private composeMessage(
+    firstLine: string,
+    reminder?: SyncNoticeReminder,
+  ): string | DocumentFragment {
+    if (!reminder) return firstLine
+    const frag = document.createDocumentFragment()
+    const line1 = document.createElement('div')
+    line1.textContent = firstLine
+    frag.appendChild(line1)
+    const line2 = document.createElement('div')
+    line2.className = 'notehelper-renewal-notice-line'
+    line2.textContent = reminder.text
+    line2.addEventListener('click', (evt) => {
+      evt.preventDefault()
+      evt.stopPropagation()
+      reminder.onClick()
+    })
+    frag.appendChild(line2)
+    return frag
   }
 
   /** Show an independent notice for a post-sync phase */

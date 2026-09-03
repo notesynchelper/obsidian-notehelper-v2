@@ -233,6 +233,8 @@ export const DEFAULT_SETTINGS: OmnivoreSettings = {
   disableMessageMarkers: false,          // 合并消息不再写 <!--nh:id--> 隐形注释符，去重纯靠最新同步游标（时间）
   omitFrontmatterId: false,              // 笔记属性不写 id（合并模式也不写 syncedIds），去重纯靠最新同步游标
   disableDiaryLinkMarkers: false,        // 日记双链不写 <!-- notehelper:id:… --> 隐形注释符，去重纯靠最新同步游标
+  // 会员续费提醒：上次在同步 Notice 里提醒的自然日（YYYY-MM-DD，本地时区）。空=从未提醒过
+  renewalReminderLastShown: '',
 }
 
 export interface OmnivoreSettings {
@@ -328,6 +330,9 @@ export interface OmnivoreSettings {
   // 提前筛掉「已同步过」的 item —— 因为没有标记可查，不筛就只剩脆弱的整条 wikilink
   // 串匹配兜底（标题/正文微变即重复，见 diaryLinkRepeatSync.spec.ts）。
   disableDiaryLinkMarkers: boolean
+  // 会员续费提醒（同步 Notice 第二行）：上次提醒的自然日 YYYY-MM-DD（本地时区）。
+  // 每个自然日最多提醒一次；空 = 从未提醒过。
+  renewalReminderLastShown: string
 }
 
 /**

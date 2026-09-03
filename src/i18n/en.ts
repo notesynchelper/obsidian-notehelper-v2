@@ -31,6 +31,32 @@ const en = {
     reminderLine: 'New version {version} available — click to update in Community plugins',
     configRestored: 'Configuration restored from backup',
   },
+  vipRenewal: {
+    notice: {
+      memberBefore: '⏳ Membership expires in {days} days · tap to renew',
+      memberToday: '⏳ Membership expires today · tap to renew',
+      memberExpiredToday: '⌛ Membership has expired · tap to renew',
+      memberExpired: '⌛ Membership expired {days} days ago · tap to renew',
+      trialBefore: '⏳ Trial ends in {days} days · tap to subscribe',
+      trialToday: '⏳ Trial ends today · tap to subscribe',
+      trialExpiredToday: '⌛ Trial has ended · tap to subscribe',
+      trialExpired: '⌛ Trial ended {days} days ago · tap to subscribe',
+    },
+    modal: {
+      titleRenew: 'Renew membership',
+      titleSubscribe: 'Get membership',
+      currentLabel: 'Current: ',
+      scanHintRenew: 'Scan the QR code with WeChat and follow the prompts to renew.',
+      scanHintSubscribe: 'Scan the QR code with WeChat and follow the prompts to subscribe.',
+      qrLabel: 'Scan with WeChat',
+      refreshHintRenew: 'After paying, tap the button below to pull your latest membership status.',
+      refreshHintSubscribe: 'After paying, tap the button below to pull your latest membership status.',
+      refreshBtnRenew: 'Renewed — refresh status',
+      refreshBtnSubscribe: 'Subscribed — refresh status',
+      closeBtn: 'Close',
+      qrLoadFail: 'Could not load the QR code. Check your network and reopen this window.',
+    },
+  },
   settings: {
     // Phase-2 IA：设置页分区（一级折叠 + VIP中心内二级折叠）的标题与摘要
     section: {

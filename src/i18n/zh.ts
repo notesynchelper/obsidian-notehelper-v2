@@ -25,6 +25,32 @@ const zh: Dict = {
     reminderLine: '发现新版本 {version}，点击前往第三方插件页升级',
     configRestored: '配置已从备份恢复',
   },
+  vipRenewal: {
+    notice: {
+      memberBefore: '⏳ 会员还有 {days} 天到期 · 点此续费',
+      memberToday: '⏳ 会员今天到期 · 点此续费',
+      memberExpiredToday: '⌛ 会员已到期 · 点此续费',
+      memberExpired: '⌛ 会员已到期 {days} 天 · 点此续费',
+      trialBefore: '⏳ 试用还有 {days} 天到期 · 点此开通会员',
+      trialToday: '⏳ 试用今天到期 · 点此开通会员',
+      trialExpiredToday: '⌛ 试用已到期 · 点此开通会员',
+      trialExpired: '⌛ 试用已到期 {days} 天 · 点此开通会员',
+    },
+    modal: {
+      titleRenew: '续费会员',
+      titleSubscribe: '开通会员',
+      currentLabel: '当前：',
+      scanHintRenew: '微信扫码，按提示完成续费。',
+      scanHintSubscribe: '微信扫码，按提示完成开通。',
+      qrLabel: '微信扫一扫',
+      refreshHintRenew: '扫码付款后，点下面按钮立即拉取最新会员状态。',
+      refreshHintSubscribe: '扫码付款后，点下面按钮立即拉取最新会员状态。',
+      refreshBtnRenew: '已完成续费，刷新状态',
+      refreshBtnSubscribe: '已完成开通，刷新状态',
+      closeBtn: '关闭',
+      qrLoadFail: '二维码加载失败，请检查网络后重新打开本窗口。',
+    },
+  },
   settings: {
     // Phase-2 IA：设置页分区（一级折叠 + VIP中心内二级折叠）的标题与摘要
     section: {

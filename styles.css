@@ -326,3 +326,78 @@ VIP Status Display
 .notehelper-diary-link-template-preview.mod-warning {
 	color: var(--text-error);
 }
+
+/* ==========================================================================
+   会员续费提醒（同步 Notice 第二行 + 扫码弹窗）
+   ========================================================================== */
+
+/* Notice 内部固定是深底 + #FAFAFA 浅字（Obsidian app.css，浅色/深色主题都一样），
+   所以第二行不能用 --text-accent 这类跟随主题的颜色——那在深底上可能糊成一片。
+   用继承色 + 下划线表达「可点」，可读性在两种主题下都由宿主保证。
+   .notice 本身是 flex column + gap，行间距已有，这里只补一条分隔线。 */
+.notehelper-renewal-notice-line {
+	padding-top: 6px;
+	border-top: 1px solid rgba(250, 250, 250, 0.2);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.notehelper-renewal-notice-line:hover {
+	opacity: 0.85;
+}
+
+/* 扫码弹窗 */
+.notehelper-renewal-modal .notehelper-renewal-status {
+	margin: 0 0 6px 0;
+	color: var(--text-normal);
+	font-weight: 500;
+}
+
+.notehelper-renewal-modal .notehelper-renewal-hint,
+.notehelper-renewal-modal .notehelper-renewal-refresh-hint {
+	margin: 0 0 6px 0;
+	color: var(--text-muted);
+	font-size: 0.9em;
+}
+
+.notehelper-renewal-modal .notehelper-renewal-qr {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	margin: 14px 0;
+}
+
+.notehelper-renewal-modal .notehelper-renewal-qr img {
+	display: block;
+	width: 200px;
+	height: 200px;
+	object-fit: contain;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+}
+
+/* 主域名 + 备用域名都拉不到图时，藏掉破图、只留一行说明（别让用户对着裂图猜） */
+.notehelper-renewal-modal .notehelper-renewal-qr img.is-hidden {
+	display: none;
+}
+
+.notehelper-renewal-modal .notehelper-renewal-qr-label {
+	color: var(--text-muted);
+	font-size: 0.85em;
+}
+
+.notehelper-renewal-modal .notehelper-renewal-qr-fail {
+	color: var(--text-error);
+	font-size: 0.85em;
+}
+
+/* ⚠️ Obsidian 没有全局 .is-hidden 工具类（只有 .workspace-ribbon.is-hidden 等
+   元素级规则），而设置页的会员状态区/二维码一直在用 addClass('is-hidden') 控制显隐
+   —— 缺了下面这条规则，「没填密钥」「网络异常」时那块区域其实根本没被隐藏。
+   规则必须带元素限定：styles.css 是全局注入的，裸 .is-hidden 会污染宿主与其它插件。 */
+.vip-status-container.is-hidden,
+.vip-status-qr.is-hidden {
+	display: none;
+}

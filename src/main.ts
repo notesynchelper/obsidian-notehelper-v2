@@ -10,7 +10,7 @@ import {
   TFile,
   TFolder,
 } from 'obsidian'
-import { getItems, deleteArticleById } from './api'
+import { getItems, deleteArticleById, fetchVipStatus } from './api'
 import { log, logError, Logger } from './logger'
 import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage, migrateDiaryLinkTemplate } from './settings'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
@@ -52,7 +52,14 @@ import { metaFromFrontmatter } from './common/localizerItemMeta'
 import { adjustSyncCursor, advanceSyncCursor, shouldMarkInitialSyncCompleted } from './syncCursorAdjust'
 import { SyncContext } from './sync/SyncContext'
 import { latestSyncCursor, isCursorCovered } from './sync/cursorDedupe'
-import { SyncNoticeManager } from './sync/SyncNoticeManager'
+import { SyncNoticeManager, type SyncNoticeReminder } from './sync/SyncNoticeManager'
+import {
+  computeRenewalReminder,
+  localDateKey,
+  shouldRemindToday,
+  type RenewalReminder,
+} from './vip/renewalReminder'
+import { VipRenewalModal } from './vip/RenewalModal'
 import { MergeProcessor, MergeGroup, flushMergeGroups } from './sync/MergeProcessor'
 import { renderMergeFileTemplate } from './sync/mergeFileTemplate'
 import {
@@ -94,6 +101,9 @@ const IMAGE_RESUME_DELAY_MS = 10_000
  */
 const PENDING_RETRY_COOLDOWN_MS = 60 * 1000
 
+/** 同步完成时等会员状态查询的最长时间；超时就本轮不提醒（不拖慢「同步完成」提示） */
+const RENEWAL_LOOKUP_TIMEOUT_MS = 3000
+
 export default class OmnivorePlugin extends Plugin {
   settings: OmnivoreSettings
   private refreshTimeout: number | null = null
@@ -110,6 +120,9 @@ export default class OmnivorePlugin extends Plugin {
   // 市场版弱升级提醒：只查版本号，绝不下载/替换插件自身文件。
   // 实际升级由用户在 Obsidian 设置 → 第三方插件（Community plugins）页完成。
   updateReminder: UpdateReminder | null = null
+  // 会员续费提醒：手动同步开始时就并发去查会员状态，等同步跑完直接用结果，
+  // 不让一次网络往返把「同步完成」的提示拖后。null = 本轮不查（自动同步 / 今天已提醒过）。
+  private renewalReminderPromise: Promise<RenewalReminder | null> | null = null
 
   constructor(...args: ConstructorParameters<typeof Plugin>) {
     super(...args)
@@ -1342,6 +1355,66 @@ export default class OmnivorePlugin extends Plugin {
     return null
   }
 
+  /**
+   * 会员续费提醒：手动同步一开始就并发查一次会员状态。
+   * 任何异常（没填密钥 / 今天已提醒过 / 网络失败）都返回 null = 本轮不提醒，
+   * 绝不让它影响同步本身。
+   */
+  private async prefetchRenewalReminder(): Promise<RenewalReminder | null> {
+    try {
+      const apiKey = this.settings.apiKey
+      if (!apiKey || apiKey.trim() === '') return null
+      // 每个自然日最多提醒一次
+      if (!shouldRemindToday(this.settings.renewalReminderLastShown, new Date())) {
+        return null
+      }
+      const vipStatus = await fetchVipStatus(apiKey, this.settings.vipApiBase)
+      return computeRenewalReminder(vipStatus, new Date())
+    } catch (error) {
+      log('会员续费提醒：查询会员状态失败，本轮不提醒', error)
+      return null
+    }
+  }
+
+  /**
+   * 取本轮的续费提醒（同步完成时调用，一次性消费）。
+   * 会员状态查询最多等 RENEWAL_LOOKUP_TIMEOUT_MS —— 「同步完成」的提示不能被
+   * 一个可有可无的会员查询拖住；超时就本轮不提醒，明天再说。
+   */
+  private async takeRenewalNotice(): Promise<SyncNoticeReminder | undefined> {
+    const pending = this.renewalReminderPromise
+    this.renewalReminderPromise = null
+    if (!pending) return undefined
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const reminder = await Promise.race([
+      pending,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), RENEWAL_LOOKUP_TIMEOUT_MS)
+      }),
+    ])
+    if (timer) clearTimeout(timer)
+    if (!reminder) return undefined
+
+    // 只有真的要展示了才记「今天提醒过」，避免查询超时/失败白白吃掉当天的提醒机会
+    this.settings.renewalReminderLastShown = localDateKey(new Date())
+    try {
+      await this.saveSettings(true)
+    } catch (error) {
+      logError('会员续费提醒：保存提醒日期失败（不影响本次提醒展示）', error)
+    }
+
+    return {
+      text: reminder.noticeText,
+      onClick: () => {
+        new VipRenewalModal(this.app, reminder, {
+          apiKey: this.settings.apiKey,
+          vipApiBase: this.settings.vipApiBase,
+        }).open()
+      },
+    }
+  }
+
   async fetchOmnivore(manualSync = true) {
     // 调试模式：仅手动同步生效（后台 syncOnStart/定时同步照常按用户配置 + 真实游标跑）。
     // 生效时用 syncSettings（用户设置浅拷贝，位置字段替换为默认值 + 强制关闭阅后即焚）跑本轮，
@@ -1417,6 +1490,8 @@ export default class OmnivorePlugin extends Plugin {
     const noticeManager = new SyncNoticeManager()
     if (manualSync) {
       noticeManager.startSync()
+      // 与同步并发查会员状态；失败/超时都只是「本轮不提醒」，绝不影响同步本身
+      this.renewalReminderPromise = this.prefetchRenewalReminder()
     }
 
     // 市场版弱升级提醒：异步查版本号（不阻塞同步、失败静默）。发现新版本时，
@@ -1785,6 +1860,8 @@ export default class OmnivorePlugin extends Plugin {
       // 调试模式：本轮不推进游标、不改 initialSyncCompleted —— 纯诊断，用完关掉即彻底复原（设计 §2.5）。
       // 直接跳过游标计算（advanceSyncCursor 本就是纯函数，这里只是让意图更清晰、零副作用）。
       const cursorValue = (successCount > 0 && !debugActive) ? advanceSyncCursor(cursorBasis) : null
+      // 会员续费提醒：同步完成的 Notice 上追加可点击的第二行（每个自然日最多一次）
+      const renewalNotice = manualSync ? await this.takeRenewalNotice() : undefined
       if (cursorValue) {
         this.settings.syncAt = cursorValue  // 全局游标（兼容性）
         if (!this.settings.deviceSyncCursors) {
@@ -1799,17 +1876,17 @@ export default class OmnivorePlugin extends Plugin {
 
         log(`✅ 同步完成！成功处理 ${successCount} 篇文章，syncAt: ${cursorValue} (maxUpdatedAt=${maxUpdatedAt}+1s), deviceId: ${deviceId}`)
         if (manualSync) {
-          noticeManager.completeSync(successCount)
+          noticeManager.completeSync(successCount, renewalNotice)
         }
       } else if (debugActive && successCount > 0) {
         log(`🐞 调试模式：成功处理 ${successCount} 篇，本轮不推进游标/不改同步状态`)
         if (manualSync) {
-          noticeManager.completeSync(successCount)
+          noticeManager.completeSync(successCount, renewalNotice)
         }
       } else {
         log('⚠️ 没有成功处理任何文章，不更新同步时间')
         if (manualSync) {
-          noticeManager.completeSync(0)
+          noticeManager.completeSync(0, renewalNotice)
         }
       }
 

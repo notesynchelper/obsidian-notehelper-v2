@@ -74,7 +74,7 @@ describe('SyncNoticeManager update reminder', () => {
     expect(onClick).toHaveBeenCalledTimes(1)
   })
 
-  it('有提醒时延长自动隐藏：3 秒后仍未 hide，12 秒后 hide', () => {
+  it('有提醒时延长自动隐藏：3 秒后仍未 hide，10 秒后 hide', () => {
     const m = new SyncNoticeManager()
     m.startSync()
     const notice = grabMainNotice(m)

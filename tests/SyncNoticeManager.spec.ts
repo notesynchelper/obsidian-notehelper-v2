@@ -1,5 +1,56 @@
-import { SyncNoticeManager } from '../src/sync/SyncNoticeManager'
+import {
+  SyncNoticeManager,
+  PLAIN_NOTICE_DURATION_MS,
+  REMINDER_NOTICE_DURATION_MS,
+} from '../src/sync/SyncNoticeManager'
 import { Notice } from 'obsidian'
+
+/**
+ * jest 跑在 node 环境（无 DOM），而带续费提醒的 Notice 要拼两行 DOM。
+ * 这里塞一个最小 document 替身：只实现 composeMessage 用到的那几个方法，
+ * 断言「第二行文本 + 点击回调」这两件真正要守的事。
+ */
+interface FakeNode {
+  tag: string
+  textContent: string
+  className: string
+  children: FakeNode[]
+  listeners: Record<string, Array<(evt: unknown) => void>>
+  appendChild(child: FakeNode): FakeNode
+  addEventListener(type: string, fn: (evt: unknown) => void): void
+}
+
+function makeNode(tag: string): FakeNode {
+  return {
+    tag,
+    textContent: '',
+    className: '',
+    children: [],
+    listeners: {},
+    appendChild(child: FakeNode) {
+      this.children.push(child)
+      return child
+    },
+    addEventListener(type: string, fn: (evt: unknown) => void) {
+      this.listeners[type] = this.listeners[type] || []
+      this.listeners[type].push(fn)
+    },
+  }
+}
+
+function installFakeDocument(): () => void {
+  const g = globalThis as unknown as { document?: unknown }
+  const had = Object.prototype.hasOwnProperty.call(g, 'document')
+  const prev = g.document
+  g.document = {
+    createDocumentFragment: () => makeNode('#fragment'),
+    createElement: (tag: string) => makeNode(tag),
+  }
+  return () => {
+    if (had) g.document = prev
+    else delete g.document
+  }
+}
 
 describe('SyncNoticeManager', () => {
   describe('progress bar calculation', () => {
@@ -162,6 +213,88 @@ describe('SyncNoticeManager', () => {
       manager.showPhaseNotice('处理图片中...')
       manager.failPhase('图片处理失败，文章内容不受影响')
       expect(manager['phaseNotice']).toBeNull()
+    })
+  })
+
+  describe('会员续费提醒（Notice 第二行）', () => {
+    let restoreDocument: () => void
+
+    beforeEach(() => {
+      restoreDocument = installFakeDocument()
+      jest.useFakeTimers()
+    })
+
+    afterEach(() => {
+      jest.useRealTimers()
+      restoreDocument()
+      jest.restoreAllMocks()
+    })
+
+    it('没有提醒时消息仍是纯字符串，3 秒后关闭（零回归）', () => {
+      const setMessage = jest.spyOn(Notice.prototype, 'setMessage')
+      const hide = jest.spyOn(Notice.prototype, 'hide')
+      const manager = new SyncNoticeManager()
+      manager.startSync()
+      setMessage.mockClear()
+
+      manager.completeSync(3)
+
+      expect(typeof setMessage.mock.calls[0][0]).toBe('string')
+      expect(setMessage.mock.calls[0][0]).toBe('■ ■ ■ ■ ■  同步完成！3 篇文章')
+      jest.advanceTimersByTime(PLAIN_NOTICE_DURATION_MS - 1)
+      expect(hide).not.toHaveBeenCalled()
+      jest.advanceTimersByTime(1)
+      expect(hide).toHaveBeenCalledTimes(1)
+    })
+
+    it('带提醒时拼成两行：第一行进度、第二行可点击的续费入口', () => {
+      const setMessage = jest.spyOn(Notice.prototype, 'setMessage')
+      const onClick = jest.fn()
+      const manager = new SyncNoticeManager()
+      manager.startSync()
+      setMessage.mockClear()
+
+      manager.completeSync(2, { text: '⏳ 会员还有 12 天到期 · 点此续费', onClick })
+
+      const frag = setMessage.mock.calls[0][0] as unknown as FakeNode
+      expect(frag.children).toHaveLength(2)
+      expect(frag.children[0].textContent).toBe('■ ■ ■ ■ ■  同步完成！2 篇文章')
+      expect(frag.children[1].textContent).toBe('⏳ 会员还有 12 天到期 · 点此续费')
+      expect(frag.children[1].className).toBe('notehelper-renewal-notice-line')
+
+      // 点第二行 → 打开续费弹窗；同时拦住冒泡，别让 Notice 自带的「点一下就关」
+      // 把提醒吞掉（用户会以为没点中）
+      const evt = { preventDefault: jest.fn(), stopPropagation: jest.fn() }
+      frag.children[1].listeners.click[0](evt)
+      expect(onClick).toHaveBeenCalledTimes(1)
+      expect(evt.stopPropagation).toHaveBeenCalled()
+      expect(evt.preventDefault).toHaveBeenCalled()
+    })
+
+    it('带提醒时停留 10 秒（3 秒来不及点）', () => {
+      const hide = jest.spyOn(Notice.prototype, 'hide')
+      const manager = new SyncNoticeManager()
+      manager.startSync()
+
+      manager.completeSync(1, { text: '⌛ 会员已到期 3 天 · 点此续费', onClick: jest.fn() })
+
+      jest.advanceTimersByTime(PLAIN_NOTICE_DURATION_MS)
+      expect(hide).not.toHaveBeenCalled()
+      jest.advanceTimersByTime(REMINDER_NOTICE_DURATION_MS - PLAIN_NOTICE_DURATION_MS)
+      expect(hide).toHaveBeenCalledTimes(1)
+    })
+
+    it('「没有新文章」那条也带提醒', () => {
+      const setMessage = jest.spyOn(Notice.prototype, 'setMessage')
+      const manager = new SyncNoticeManager()
+      manager.startSync()
+      setMessage.mockClear()
+
+      manager.showNoArticles({ text: '⏳ 试用还有 1 天到期 · 点此开通会员', onClick: jest.fn() })
+
+      const frag = setMessage.mock.calls[0][0] as unknown as FakeNode
+      expect(frag.children[0].textContent).toBe('没有新文章需要同步')
+      expect(frag.children[1].textContent).toBe('⏳ 试用还有 1 天到期 · 点此开通会员')
     })
   })
 })
