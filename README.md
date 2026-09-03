@@ -36,11 +36,11 @@ Legacy note: the bundle includes the `@omnivore-app/api` client library (this pl
 
 **What is sent.** Requests carry your API key, sync cursors/timestamps, and — for explicit actions you trigger — article IDs (e.g. "burn after reading" deletion, clearing server-side storage). The plugin does **not** read, upload, or index the existing notes in your vault; content flows from the service *into* your vault.
 
-**Paid tiers.** The backing service offers a free quota and paid VIP tiers. The settings page shows your membership status and QR codes for subscribing through WeChat. No payment happens inside the plugin.
+**Paid tiers.** The backing service offers a free quota and paid VIP tiers. The settings page shows your membership status and QR codes for subscribing through WeChat. When your membership (or trial) is about to expire or has just expired, a **manual** sync may append one passive line to the sync-status notice — at most once per calendar day, and only when the membership API reports a real expiry date. Clicking it opens a dialog that shows your current membership status, a **statically bundled** payment QR code (scanned with WeChat) and a "refresh status" button. No payment happens inside the plugin, and automatic background syncs never show this line.
 
 **No self-update.** This build contains **no self-update mechanism**. Updates are delivered exclusively through the Obsidian community plugin catalog. After a manual sync the plugin may show a one-line passive reminder under the sync status notice when a newer market version exists (it only fetches a version number from `obsidian.notebooksyncer.com/plugversion-market`); clicking it opens Obsidian's **Settings → Community plugins** page, where you decide whether to update. The plugin never downloads or replaces its own files.
 
-**Static promotion in settings (disclosed).** The settings page shows your membership status and a **statically bundled** QR image (no network load) for purchasing the paid membership. Promotional QR images that the service embeds into note content are **stripped by the plugin** before notes are written to your vault — nothing promotional is written into your notes.
+**Static promotion in settings (disclosed).** The settings page shows your membership status and a **statically bundled** QR image (no network load) for purchasing the paid membership; the renewal dialog described above uses a second bundled QR image (the payment page). Both are compiled into the plugin bundle and load with **zero network requests**. Promotional QR images that the service embeds into note content are **stripped by the plugin** before notes are written to your vault — nothing promotional is written into your notes.
 
 **No cross-plugin scripting.** This edition does not invoke other plugins' commands and does not run Templater interpolation; `<% %>` tags in your templates are kept as-is. As a safety guard, files created by this plugin are marked so the Templater plugin (if installed) will not execute template commands found inside synced web content.
 
@@ -95,11 +95,11 @@ Legacy note: the bundle includes the `@omnivore-app/api` client library (this pl
 
 **发送哪些数据。** 请求携带你的 API 密钥、同步游标/时间戳，以及你显式触发的操作对应的文章 ID（如「阅后即焚」删除、清空云端内容）。插件**不会**读取、上传或索引你仓库中已有的笔记；内容只从服务端流向你的仓库。
 
-**付费层级。** 背后服务提供免费额度与付费 VIP 层级。设置页会展示你的会员状态和微信订阅二维码。插件内不发生任何支付行为。
+**付费层级。** 背后服务提供免费额度与付费 VIP 层级。设置页会展示你的会员状态和微信订阅二维码。当会员（或试用）临近到期 / 刚过期时，**手动**同步后可能在同步状态提示下方追加一行弱提醒——每个自然日最多一次，且只在会员接口给出真实到期时间时出现；点开是一个展示当前会员状态、一张**打包内置**的付款二维码（微信扫码）和「刷新状态」按钮的窗口。插件内不发生任何支付行为，自动后台同步也不会出现这行提醒。
 
 **没有自更新。** 本构建**不含任何自更新机制**，更新只通过 Obsidian 官方社区插件目录分发。手动同步后，若市场上有新版本，同步状态提示下方可能出现一行弱提醒（仅从 `obsidian.notebooksyncer.com/plugversion-market` 获取一个版本号）；点击后打开 Obsidian **设置 → 第三方插件** 页面，由你自行决定是否升级。插件永远不会下载或替换自身文件。
 
-**设置页内的静态推广（已披露）。** 设置页会展示会员状态和一张**打包内置**的付费会员购买二维码（不从网络加载）。服务端拼进笔记正文的推广二维码会在写入仓库前被插件**剥除**——不会有任何推广内容写进你的笔记。
+**静态推广（已披露）。** 设置页会展示会员状态和一张**打包内置**的付费会员购买二维码；上面说的续费窗口用的是另一张打包内置的付款二维码。两张图都编译进插件包，展示时**零网络请求**。服务端拼进笔记正文的推广二维码会在写入仓库前被插件**剥除**——不会有任何推广内容写进你的笔记。
 
 **无跨插件脚本行为。** 本版本不调用其它插件的命令，也不执行 Templater 插值；模板里的 `<% %>` 标签会原样保留。作为安全防护，本插件创建的文件会被标记，避免已安装的 Templater 插件执行同步网页内容中出现的模板命令。
 
