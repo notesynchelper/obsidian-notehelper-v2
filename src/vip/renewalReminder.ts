@@ -127,7 +127,7 @@ export function buildVipStatusText(vip: VipStatus, now: Date): string {
         : vip.vipType === 'obvip'
           ? 'vipRenewal.modal.tierMember'
           : 'vipRenewal.modal.tierUnknown'
-  const tier = t(tierKey as Parameters<typeof t>[0])
+  const tier = t(tierKey)
 
   if (!vip.endTime) return tier
   const end = new Date(vip.endTime)

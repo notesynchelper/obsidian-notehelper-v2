@@ -159,13 +159,12 @@ export class SyncNoticeManager {
     reminder?: SyncNoticeReminder,
   ): string | DocumentFragment {
     if (!reminder) return firstLine
-    const frag = document.createDocumentFragment()
-    const line1 = document.createElement('div')
-    line1.textContent = firstLine
-    frag.appendChild(line1)
-    const line2 = document.createElement('div')
-    line2.className = 'notehelper-renewal-notice-line'
-    line2.textContent = reminder.text
+    const frag = createFragment()
+    frag.appendChild(createDiv({ text: firstLine }))
+    const line2 = createDiv({
+      cls: 'notehelper-renewal-notice-line',
+      text: reminder.text,
+    })
     line2.addEventListener('click', (evt) => {
       evt.preventDefault()
       evt.stopPropagation()

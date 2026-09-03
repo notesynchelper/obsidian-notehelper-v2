@@ -1388,16 +1388,16 @@ export default class OmnivorePlugin extends Plugin {
   ): Promise<SyncNoticeReminder | undefined> {
     if (!pending) return undefined
 
-    let timer: ReturnType<typeof setTimeout> | null = null
+    let timer: number | null = null
     const vipStatus = await Promise.race([
       pending,
       new Promise<null>((resolve) => {
         // 已经完成的 pending 是微任务，永远排在这个定时器（宏任务）前面，
         // 所以 remaining=0 时也不会把「已经拿到的结果」误判成超时。
-        timer = setTimeout(() => resolve(null), Math.max(0, deadlineAt - Date.now()))
+        timer = window.setTimeout(() => resolve(null), Math.max(0, deadlineAt - Date.now()))
       }),
     ])
-    if (timer) clearTimeout(timer)
+    if (timer !== null) window.clearTimeout(timer)
     if (!vipStatus) return undefined
 
     // 判定 + 记账用同一个 now：跨午夜也不会「按昨天算、记到今天」

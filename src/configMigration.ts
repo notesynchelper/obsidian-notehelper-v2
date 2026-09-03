@@ -1,7 +1,6 @@
 import { App, Notice, Plugin, normalizePath } from 'obsidian'
 import {
   DEFAULT_SETTINGS,
-  MergeMode,
   OmnivoreSettings,
   migrateDiaryLinkTemplate,
 } from './settings'

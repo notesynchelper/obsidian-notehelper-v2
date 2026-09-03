@@ -55,7 +55,7 @@ export class VipRenewalModal extends Modal {
     const qrWrap = contentEl.createDiv({ cls: 'notehelper-renewal-qr' })
     const qrImg = qrWrap.createEl('img', { attr: { alt: t('vipRenewal.modal.qrLabel') } })
     this.loadQrCode(qrImg, qrWrap)
-    qrWrap.createEl('div', {
+    qrWrap.createDiv({
       cls: 'notehelper-renewal-qr-label',
       text: t('vipRenewal.modal.qrLabel'),
     })
@@ -99,7 +99,7 @@ export class VipRenewalModal extends Modal {
     img.onerror = () => {
       img.onerror = null
       img.addClass('is-hidden')
-      wrap.createEl('div', {
+      wrap.createDiv({
         cls: 'notehelper-renewal-qr-fail',
         text: t('vipRenewal.modal.qrLoadFail'),
       })

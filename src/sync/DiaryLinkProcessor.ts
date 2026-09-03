@@ -295,8 +295,9 @@ export class DiaryLinkProcessor {
 				return linkItem.targetFile
 			}
 			const file = vault.getAbstractFileByPath(linkItem.targetPath)
-			if (!file || typeof (file as { basename?: unknown }).basename !== 'string') return linkItem.targetFile
-			const text = cache.fileToLinktext(file as TFile, diaryPath, true)
+			// instanceof 收窄（不用 as TFile）：文件夹 / 宿主 mock 返回的裸对象都挡在外面
+			if (!(file instanceof TFile)) return linkItem.targetFile
+			const text = cache.fileToLinktext(file, diaryPath, true)
 			return text && text.trim() ? text : linkItem.targetFile
 		} catch {
 			return linkItem.targetFile

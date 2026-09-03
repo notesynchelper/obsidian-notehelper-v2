@@ -7,8 +7,9 @@ import { Notice } from 'obsidian'
 
 /**
  * jest 跑在 node 环境（无 DOM），而带续费提醒的 Notice 要拼两行 DOM。
- * 这里塞一个最小 document 替身：只实现 composeMessage 用到的那几个方法，
- * 断言「第二行文本 + 点击回调」这两件真正要守的事。
+ * 生产代码用的是 Obsidian 的全局 createFragment() / createDiv()
+ *（obsidianmd/prefer-create-el 要求，官方审核 bot 会扫），这里塞一对最小替身，
+ * 断言「第二行文本 + class + 点击回调」这三件真正要守的事。
  */
 interface FakeNode {
   tag: string
@@ -20,11 +21,11 @@ interface FakeNode {
   addEventListener(type: string, fn: (evt: unknown) => void): void
 }
 
-function makeNode(tag: string): FakeNode {
+function makeNode(tag: string, o?: { cls?: string; text?: string }): FakeNode {
   return {
     tag,
-    textContent: '',
-    className: '',
+    textContent: o?.text ?? '',
+    className: o?.cls ?? '',
     children: [],
     listeners: {},
     appendChild(child: FakeNode) {
@@ -38,17 +39,20 @@ function makeNode(tag: string): FakeNode {
   }
 }
 
-function installFakeDocument(): () => void {
-  const g = globalThis as unknown as { document?: unknown }
-  const had = Object.prototype.hasOwnProperty.call(g, 'document')
-  const prev = g.document
-  g.document = {
-    createDocumentFragment: () => makeNode('#fragment'),
-    createElement: (tag: string) => makeNode(tag),
+function installFakeDom(): () => void {
+  const g = globalThis as unknown as Record<string, unknown>
+  const had = {
+    createFragment: Object.prototype.hasOwnProperty.call(g, 'createFragment'),
+    createDiv: Object.prototype.hasOwnProperty.call(g, 'createDiv'),
   }
+  const prev = { createFragment: g.createFragment, createDiv: g.createDiv }
+  g.createFragment = () => makeNode('#fragment')
+  g.createDiv = (o?: { cls?: string; text?: string }) => makeNode('div', o)
   return () => {
-    if (had) g.document = prev
-    else delete g.document
+    for (const k of ['createFragment', 'createDiv'] as const) {
+      if (had[k]) g[k] = prev[k]
+      else delete g[k]
+    }
   }
 }
 
@@ -217,16 +221,16 @@ describe('SyncNoticeManager', () => {
   })
 
   describe('会员续费提醒（Notice 第二行）', () => {
-    let restoreDocument: () => void
+    let restoreDom: () => void
 
     beforeEach(() => {
-      restoreDocument = installFakeDocument()
+      restoreDom = installFakeDom()
       jest.useFakeTimers()
     })
 
     afterEach(() => {
       jest.useRealTimers()
-      restoreDocument()
+      restoreDom()
       jest.restoreAllMocks()
     })
 
