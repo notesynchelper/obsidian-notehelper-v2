@@ -10,7 +10,7 @@ import {
   TFile,
   TFolder,
 } from 'obsidian'
-import { getItems, deleteArticleById, fetchVipStatus } from './api'
+import { getItems, deleteArticleById, fetchVipStatus, type VipStatus } from './api'
 import { log, logError, Logger } from './logger'
 import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage, migrateDiaryLinkTemplate } from './settings'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
@@ -57,7 +57,6 @@ import {
   computeRenewalReminder,
   localDateKey,
   shouldRemindToday,
-  type RenewalReminder,
 } from './vip/renewalReminder'
 import { VipRenewalModal } from './vip/RenewalModal'
 import { MergeProcessor, MergeGroup, flushMergeGroups } from './sync/MergeProcessor'
@@ -101,7 +100,7 @@ const IMAGE_RESUME_DELAY_MS = 10_000
  */
 const PENDING_RETRY_COOLDOWN_MS = 60 * 1000
 
-/** 同步完成时等会员状态查询的最长时间；超时就本轮不提醒（不拖慢「同步完成」提示） */
+/** 会员状态查询的总预算（从预取开始算）；超时就本轮不提醒，不拖慢「同步完成」提示 */
 const RENEWAL_LOOKUP_TIMEOUT_MS = 3000
 
 export default class OmnivorePlugin extends Plugin {
@@ -120,9 +119,6 @@ export default class OmnivorePlugin extends Plugin {
   // 市场版弱升级提醒：只查版本号，绝不下载/替换插件自身文件。
   // 实际升级由用户在 Obsidian 设置 → 第三方插件（Community plugins）页完成。
   updateReminder: UpdateReminder | null = null
-  // 会员续费提醒：手动同步开始时就并发去查会员状态，等同步跑完直接用结果，
-  // 不让一次网络往返把「同步完成」的提示拖后。null = 本轮不查（自动同步 / 今天已提醒过）。
-  private renewalReminderPromise: Promise<RenewalReminder | null> | null = null
 
   constructor(...args: ConstructorParameters<typeof Plugin>) {
     super(...args)
@@ -1356,20 +1352,21 @@ export default class OmnivorePlugin extends Plugin {
   }
 
   /**
-   * 会员续费提醒：手动同步一开始就并发查一次会员状态。
+   * 会员续费提醒第一步：手动同步一开始就并发查一次会员状态（只做网络，不下判断）。
    * 任何异常（没填密钥 / 今天已提醒过 / 网络失败）都返回 null = 本轮不提醒，
    * 绝不让它影响同步本身。
+   *
+   * 「今天提醒过没有」这里只作【省一次网络请求】的早筛，真正的判定留到展示时
+   * 用同一个时刻重做 —— 否则同步跨过午夜时，会拿昨天的判断在今天展示并记账。
    */
-  private async prefetchRenewalReminder(): Promise<RenewalReminder | null> {
+  private async prefetchVipStatusForReminder(): Promise<VipStatus | null> {
     try {
       const apiKey = this.settings.apiKey
       if (!apiKey || apiKey.trim() === '') return null
-      // 每个自然日最多提醒一次
       if (!shouldRemindToday(this.settings.renewalReminderLastShown, new Date())) {
         return null
       }
-      const vipStatus = await fetchVipStatus(apiKey, this.settings.vipApiBase)
-      return computeRenewalReminder(vipStatus, new Date())
+      return await fetchVipStatus(apiKey, this.settings.vipApiBase)
     } catch (error) {
       log('会员续费提醒：查询会员状态失败，本轮不提醒', error)
       return null
@@ -1377,32 +1374,42 @@ export default class OmnivorePlugin extends Plugin {
   }
 
   /**
-   * 取本轮的续费提醒（同步完成时调用，一次性消费）。
-   * 会员状态查询最多等 RENEWAL_LOOKUP_TIMEOUT_MS —— 「同步完成」的提示不能被
-   * 一个可有可无的会员查询拖住；超时就本轮不提醒，明天再说。
+   * 会员续费提醒第二步：同步完成时把预取结果变成 Notice 第二行。
+   *
+   * @param pending    prefetchVipStatusForReminder() 的在途 promise（本轮局部持有，
+   *                   不放类字段——看门狗超时后旧同步仍在跑，共享单槽会串轮）
+   * @param deadlineAt 等待截止时刻（预取【开始】+ RENEWAL_LOOKUP_TIMEOUT_MS）。
+   *                   同步本身跑了多久就抵掉多久，正常同步走到这里几乎不用等；
+   *                   会员接口挂住时也绝不会让「同步完成」的提示多等一个完整超时。
    */
-  private async takeRenewalNotice(): Promise<SyncNoticeReminder | undefined> {
-    const pending = this.renewalReminderPromise
-    this.renewalReminderPromise = null
+  private async takeRenewalNotice(
+    pending: Promise<VipStatus | null> | null,
+    deadlineAt: number,
+  ): Promise<SyncNoticeReminder | undefined> {
     if (!pending) return undefined
 
     let timer: ReturnType<typeof setTimeout> | null = null
-    const reminder = await Promise.race([
+    const vipStatus = await Promise.race([
       pending,
       new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), RENEWAL_LOOKUP_TIMEOUT_MS)
+        // 已经完成的 pending 是微任务，永远排在这个定时器（宏任务）前面，
+        // 所以 remaining=0 时也不会把「已经拿到的结果」误判成超时。
+        timer = setTimeout(() => resolve(null), Math.max(0, deadlineAt - Date.now()))
       }),
     ])
     if (timer) clearTimeout(timer)
+    if (!vipStatus) return undefined
+
+    // 判定 + 记账用同一个 now：跨午夜也不会「按昨天算、记到今天」
+    const now = new Date()
+    if (!shouldRemindToday(this.settings.renewalReminderLastShown, now)) return undefined
+    const reminder = computeRenewalReminder(vipStatus, now)
     if (!reminder) return undefined
 
-    // 只有真的要展示了才记「今天提醒过」，避免查询超时/失败白白吃掉当天的提醒机会
-    this.settings.renewalReminderLastShown = localDateKey(new Date())
-    try {
-      await this.saveSettings(true)
-    } catch (error) {
-      logError('会员续费提醒：保存提醒日期失败（不影响本次提醒展示）', error)
-    }
+    // 防抖保存即可：紧接着的游标落盘会把它一起写下去。这里不做立即写盘（saveSettings(true)
+    // 会连带外部配置备份），别让一个可有可无的提醒把「同步完成」的提示又拖住几百毫秒。
+    this.settings.renewalReminderLastShown = localDateKey(now)
+    void this.saveSettings()
 
     return {
       text: reminder.noticeText,
@@ -1488,10 +1495,14 @@ export default class OmnivorePlugin extends Plugin {
     }
 
     const noticeManager = new SyncNoticeManager()
+    // 会员续费提醒：本轮局部持有（不放类字段），看门狗超时后旧同步仍在跑也不会串轮
+    let renewalPending: Promise<VipStatus | null> | null = null
+    let renewalDeadlineAt = 0
     if (manualSync) {
       noticeManager.startSync()
       // 与同步并发查会员状态；失败/超时都只是「本轮不提醒」，绝不影响同步本身
-      this.renewalReminderPromise = this.prefetchRenewalReminder()
+      renewalDeadlineAt = Date.now() + RENEWAL_LOOKUP_TIMEOUT_MS
+      renewalPending = this.prefetchVipStatusForReminder()
     }
 
     // 市场版弱升级提醒：异步查版本号（不阻塞同步、失败静默）。发现新版本时，
@@ -1861,7 +1872,9 @@ export default class OmnivorePlugin extends Plugin {
       // 直接跳过游标计算（advanceSyncCursor 本就是纯函数，这里只是让意图更清晰、零副作用）。
       const cursorValue = (successCount > 0 && !debugActive) ? advanceSyncCursor(cursorBasis) : null
       // 会员续费提醒：同步完成的 Notice 上追加可点击的第二行（每个自然日最多一次）
-      const renewalNotice = manualSync ? await this.takeRenewalNotice() : undefined
+      const renewalNotice = manualSync
+        ? await this.takeRenewalNotice(renewalPending, renewalDeadlineAt)
+        : undefined
       if (cursorValue) {
         this.settings.syncAt = cursorValue  // 全局游标（兼容性）
         if (!this.settings.deviceSyncCursors) {

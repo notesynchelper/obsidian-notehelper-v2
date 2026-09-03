@@ -11,7 +11,7 @@
 // 这类别扭措辞，也无法稳定区分「今天到期」与「已到期」。
 
 import type { VipStatus } from '../api'
-import { t } from '../i18n'
+import { getLang, t } from '../i18n'
 
 /** 正式/头等舱会员：到期前多少天开始提醒 */
 export const MEMBER_LEAD_DAYS = 30
@@ -70,23 +70,70 @@ function fill(template: string, vars: Record<string, string | number>): string {
   )
 }
 
+// 英文有单复数（1 day / 2 days），中文没有——两边都用「单数一条、复数一条」的
+// 双 key，中文两条填一样的话即可，省掉一套复数规则。
 function noticeText(
   audience: RenewalAudience,
   phase: RenewalPhase,
   days: number,
 ): string {
   if (audience === 'trial') {
-    if (phase === 'before') return fill(t('vipRenewal.notice.trialBefore'), { days })
+    if (phase === 'before') {
+      return fill(
+        days === 1 ? t('vipRenewal.notice.trialBeforeOne') : t('vipRenewal.notice.trialBefore'),
+        { days },
+      )
+    }
     if (phase === 'today') return t('vipRenewal.notice.trialToday')
-    return days >= 1
-      ? fill(t('vipRenewal.notice.trialExpired'), { days })
-      : t('vipRenewal.notice.trialExpiredToday')
+    if (days === 0) return t('vipRenewal.notice.trialExpiredToday')
+    return fill(
+      days === 1 ? t('vipRenewal.notice.trialExpiredOne') : t('vipRenewal.notice.trialExpired'),
+      { days },
+    )
   }
-  if (phase === 'before') return fill(t('vipRenewal.notice.memberBefore'), { days })
+  if (phase === 'before') {
+    return fill(
+      days === 1 ? t('vipRenewal.notice.memberBeforeOne') : t('vipRenewal.notice.memberBefore'),
+      { days },
+    )
+  }
   if (phase === 'today') return t('vipRenewal.notice.memberToday')
-  return days >= 1
-    ? fill(t('vipRenewal.notice.memberExpired'), { days })
-    : t('vipRenewal.notice.memberExpiredToday')
+  if (days === 0) return t('vipRenewal.notice.memberExpiredToday')
+  return fill(
+    days === 1 ? t('vipRenewal.notice.memberExpiredOne') : t('vipRenewal.notice.memberExpired'),
+    { days },
+  )
+}
+
+/**
+ * 弹窗里「当前：」那行。
+ *
+ * 不能直接用 VipStatus.displayText —— 它在 api.ts 里是写死的中文（试用会员 |
+ * 到期时间：…），英文界面会中英混排。这里按档位 + 到期时间用当前语言重新拼，
+ * 中文输出与 displayText 逐字一致（零观感变化），英文才真正变成英文。
+ */
+export function buildVipStatusText(vip: VipStatus, now: Date): string {
+  const tierKey =
+    vip.vipType === 'obtrail'
+      ? 'vipRenewal.modal.tierTrial'
+      : vip.vipType === 'obvvip'
+        ? 'vipRenewal.modal.tierPremium'
+        : 'vipRenewal.modal.tierMember'
+  const tier = t(tierKey as Parameters<typeof t>[0])
+
+  if (!vip.endTime) return tier
+  const end = new Date(vip.endTime)
+  if (Number.isNaN(end.getTime())) return tier
+
+  const expired = end.getTime() <= now.getTime() ? t('vipRenewal.modal.expiredSuffix') : ''
+  const timeStr = end.toLocaleString(getLang() === 'zh' ? 'zh-CN' : 'en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  return `${tier}${expired}${t('vipRenewal.modal.expiresLabel')}${timeStr}`
 }
 
 /**
@@ -134,6 +181,6 @@ export function computeRenewalReminder(
       audience === 'trial'
         ? t('vipRenewal.modal.titleSubscribe')
         : t('vipRenewal.modal.titleRenew'),
-    statusText: vip.displayText,
+    statusText: buildVipStatusText(vip, now),
   }
 }

@@ -10,6 +10,7 @@
 
 import type { VipStatus } from '../src/api'
 import {
+  buildVipStatusText,
   computeRenewalReminder,
   localDateKey,
   shouldRemindToday,
@@ -221,5 +222,54 @@ describe('calendarDayDiff', () => {
   it('按自然日算，不受时刻影响', () => {
     expect(calendarDayDiff(at('2026-09-01T00:10:00.000Z'), at('2026-08-31T23:50:00.000Z'))).toBe(1)
     expect(calendarDayDiff(at('2026-08-31T23:50:00.000Z'), at('2026-08-31T00:10:00.000Z'))).toBe(0)
+  })
+})
+
+describe('弹窗「当前：」那行的状态文案', () => {
+  // 不能直接用 api.ts 的 displayText（写死中文）——英文界面会中英混排。
+  // 中文输出必须与旧的 displayText 逐字一致，避免观感变化。
+  it('未过期：档位 + 到期时间，与 displayText 同格式', () => {
+    const text = buildVipStatusText(
+      vip('obvip', '2026-09-12T10:00:00.000Z'),
+      at('2026-08-31T09:00:00.000Z'),
+    )
+    expect(text).toBe('正式会员 | 到期时间：2026/09/12 10:00')
+  })
+
+  it('已过期：带（已过期）后缀', () => {
+    const text = buildVipStatusText(
+      vip('obvip', '2026-08-28T10:00:00.000Z'),
+      at('2026-08-31T09:00:00.000Z'),
+    )
+    expect(text).toBe('正式会员（已过期） | 到期时间：2026/08/28 10:00')
+  })
+
+  it('档位名按 vipType 分流', () => {
+    const now = at('2026-08-31T09:00:00.000Z')
+    expect(buildVipStatusText(vip('obtrail', '2026-09-02T10:00:00.000Z'), now)).toContain('试用会员')
+    expect(buildVipStatusText(vip('obvvip', '2026-09-02T10:00:00.000Z'), now)).toContain('头等舱会员')
+  })
+
+  it('缺到期时间 / 日期非法：只显示档位，不拼半截时间', () => {
+    const now = at('2026-08-31T09:00:00.000Z')
+    expect(buildVipStatusText(vip('obvip', undefined), now)).toBe('正式会员')
+    expect(buildVipStatusText(vip('obvip', '不是日期'), now)).toBe('正式会员')
+  })
+})
+
+describe('单复数（英文会显示 1 day / 2 days，中文两条一样）', () => {
+  it('剩 1 天 / 已过 1 天走单数文案', () => {
+    expect(
+      computeRenewalReminder(
+        vip('obvip', '2026-09-01T10:00:00.000Z'),
+        at('2026-08-31T09:00:00.000Z'),
+      )?.noticeText,
+    ).toBe('⏳ 会员还有 1 天到期 · 点此续费')
+    expect(
+      computeRenewalReminder(
+        vip('obvip', '2026-08-30T10:00:00.000Z'),
+        at('2026-08-31T09:00:00.000Z'),
+      )?.noticeText,
+    ).toBe('⌛ 会员已到期 1 天 · 点此续费')
   })
 })

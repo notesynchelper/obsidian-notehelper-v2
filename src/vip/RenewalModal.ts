@@ -13,7 +13,7 @@ import { App, Modal, Notice } from 'obsidian'
 import { fetchVipStatusFresh, type VipStatus } from '../api'
 import { VIP_QR_DATA_URI } from '../assets/vipQrImage'
 import { t } from '../i18n'
-import type { RenewalReminder } from './renewalReminder'
+import { buildVipStatusText, type RenewalReminder } from './renewalReminder'
 
 export interface RenewalModalOptions {
   apiKey: string
@@ -87,7 +87,6 @@ export class VipRenewalModal extends Modal {
     this.contentEl.empty()
   }
 
-  // 主域名 → 备用域名，与设置页同一套兜底；两次都失败就明说，别留一个破图。
   /**
    * 市场版：二维码是打包进插件的静态 data URI，**零网络请求**
    *（Obsidian 开发者政策禁止从网络动态加载推广内容；静态 + README 披露才允许）。
@@ -126,7 +125,8 @@ export class VipRenewalModal extends Modal {
         return
       }
       if (this.statusEl) {
-        this.statusEl.textContent = `${t('vipRenewal.modal.currentLabel')}${fresh.displayText}`
+        this.statusEl.textContent =
+          `${t('vipRenewal.modal.currentLabel')}${buildVipStatusText(fresh, new Date())}`
       }
       new Notice(t('settings.vip.refreshed'))
     } finally {
