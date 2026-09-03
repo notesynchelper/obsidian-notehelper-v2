@@ -3,7 +3,8 @@
 // 内容（2026-08-31 用户确认的「信息版 + 刷新按钮」）：
 //   标题：续费会员 / 开通会员
 //   当前：<会员状态接口的展示文本>
-//   一句扫码引导 + 二维码（市场版复用设置页那张【打包内置】的静态二维码，零网络请求）
+//   一句扫码引导 + 付款二维码（扫出来是 https://pay.bijitongbu.site/obsidian.html 收银台；
+//   市场版这张图是【打包内置】的静态 data URI，零网络请求）
 //   底部：[已完成续费，刷新状态]（走不缓存的实时接口）+ [关闭]
 //
 // 刷新按钮复用设置页那条实时链路（/user-config/refresh），所以「刚付完钱状态没变」
@@ -11,7 +12,7 @@
 
 import { App, Modal, Notice } from 'obsidian'
 import { fetchVipStatusFresh, type VipStatus } from '../api'
-import { VIP_QR_DATA_URI } from '../assets/vipQrImage'
+import { VIP_PAY_QR_DATA_URI } from '../assets/vipPayQrImage'
 import { t } from '../i18n'
 import { buildVipStatusText, type RenewalReminder } from './renewalReminder'
 
@@ -90,7 +91,9 @@ export class VipRenewalModal extends Modal {
   /**
    * 市场版：二维码是打包进插件的静态 data URI，**零网络请求**
    *（Obsidian 开发者政策禁止从网络动态加载推广内容；静态 + README 披露才允许）。
-   * 与设置页「购买高级权益」用的是同一份快照，见 src/assets/vipQrImage.ts。
+   *
+   * 🔴 用的是【付款】码（src/assets/vipPayQrImage.ts），不是设置页「购买高级权益」
+   * 那张公众号带参码 —— 后者扫出来是「关注公众号」，根本走不到付款。
    */
   private loadQrCode(img: HTMLImageElement, wrap: HTMLElement): void {
     img.onerror = () => {
@@ -101,7 +104,7 @@ export class VipRenewalModal extends Modal {
         text: t('vipRenewal.modal.qrLoadFail'),
       })
     }
-    img.src = VIP_QR_DATA_URI
+    img.src = VIP_PAY_QR_DATA_URI
   }
 
   // 「已完成续费，刷新状态」：走不缓存的实时接口，直接把最新状态写回弹窗。
