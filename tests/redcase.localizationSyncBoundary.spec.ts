@@ -116,6 +116,98 @@ test('parent folder rename preserves nested attachment pending records across re
   expect(restarted.getQueueStats().pending).toBe(3)
 })
 
+test('preset apply and undo refresh both existing localizers without replacing their pending stores', async () => {
+  const { plugin } = await initializedLocalizerHarness('image')
+  const attachment = await initializedLocalizerHarness('attachment', [{ filePath: 'queued.md', retryCount: 2, createdAt: 1 }])
+  plugin.attachmentLocalizer = attachment.plugin.attachmentLocalizer
+  const imageLocalizer = plugin.imageLocalizer
+  const attachmentLocalizer = plugin.attachmentLocalizer
+  const imageStore = imageLocalizer.getPendingStore()
+  const attachmentStore = attachmentLocalizer.getPendingStore()
+  const original = { ...plugin.settings }
+  const imageUpdate = jest.spyOn(imageLocalizer, 'updateOptions')
+  const attachmentUpdate = jest.spyOn(attachmentLocalizer, 'updateOptions')
+
+  Object.assign(plugin.settings, {
+    imageAttachmentFolder: '{{folder}}/images', attachmentFolder: '{{folder}}/files',
+    folderDateFormat: 'yyyy/MM', enablePngToJpeg: true, jpegQuality: 67, imageDownloadRetries: 4,
+  })
+  plugin.refreshLocalizerOptions()
+  expect(imageUpdate).toHaveBeenLastCalledWith({
+    attachmentFolder: '{{folder}}/images', folderDateFormat: 'yyyy/MM',
+    enablePngToJpeg: true, jpegQuality: 67, maxRetries: 4, retryDelay: 1000,
+  })
+  expect(attachmentUpdate).toHaveBeenLastCalledWith({
+    attachmentFolder: '{{folder}}/files', folderDateFormat: 'yyyy/MM', maxRetries: 4, retryDelay: 1000,
+  })
+
+  Object.assign(plugin.settings, original)
+  plugin.refreshLocalizerOptions()
+  expect(imageUpdate).toHaveBeenLastCalledWith({
+    attachmentFolder: original.imageAttachmentFolder, folderDateFormat: original.folderDateFormat,
+    enablePngToJpeg: original.enablePngToJpeg, jpegQuality: original.jpegQuality,
+    maxRetries: original.imageDownloadRetries, retryDelay: 1000,
+  })
+  expect(attachmentUpdate).toHaveBeenLastCalledWith({
+    attachmentFolder: original.attachmentFolder, folderDateFormat: original.folderDateFormat,
+    maxRetries: original.imageDownloadRetries, retryDelay: 1000,
+  })
+  expect(plugin.imageLocalizer).toBe(imageLocalizer)
+  expect(plugin.attachmentLocalizer).toBe(attachmentLocalizer)
+  expect(imageLocalizer.getPendingStore()).toBe(imageStore)
+  expect(attachmentLocalizer.getPendingStore()).toBe(attachmentStore)
+  expect(attachmentStore.get('queued.md')).toMatchObject({ retryCount: 2 })
+})
+
+test.each(['url-local-map.json', 'pending-localize-queue.json', 'pending-attachment-queue.json'])(
+  'initialization reads current options after awaiting %s, even when a preset is undone before load finishes', async blockedSidecar => {
+    const { plugin } = harness()
+    plugin.imageLocalizer = null
+    plugin.attachmentLocalizer = null
+    let releaseLoad!: () => void
+    const blocked = new Promise<void>(resolve => { releaseLoad = resolve })
+    let markLoading!: () => void
+    const loading = new Promise<void>(resolve => { markLoading = resolve })
+    plugin.createSidecarJsonPersister = (name: string) => ({
+      load: async () => {
+        if (name === blockedSidecar) { markLoading(); await blocked }
+        return {}
+      },
+      save: async () => {},
+    })
+    plugin.watchLocalizationRetry = jest.fn()
+    plugin.registerEvent = jest.fn()
+    plugin.app.vault.on = jest.fn()
+    plugin.app.workspace = { onLayoutReady: jest.fn() }
+    const lane = blockedSidecar === 'pending-attachment-queue.json' ? 'attachment' : 'image'
+    const init = () => lane === 'image' ? plugin.initializeImageLocalizer() : plugin.initializeAttachmentLocalizer()
+    const initializing = init()
+    await loading
+    const concurrentInit = init()
+    plugin.settings.imageAttachmentFolder = 'preset/images'
+    plugin.settings.attachmentFolder = 'preset/files'
+    plugin.refreshLocalizerOptions()
+    // Undo can run while no instance exists yet: construction must use the final state.
+    plugin.settings.imageAttachmentFolder = 'restored/images'
+    plugin.settings.attachmentFolder = 'restored/files'
+    plugin.settings.folderDateFormat = 'yyyy/MM'
+    plugin.settings.jpegQuality = 68
+    plugin.settings.imageDownloadRetries = 3
+    plugin.refreshLocalizerOptions()
+    expect(plugin.imageLocalizer).toBeNull()
+    expect(plugin.attachmentLocalizer).toBeNull()
+    releaseLoad()
+    await Promise.all([initializing, concurrentInit])
+    const localizer = lane === 'image' ? plugin.imageLocalizer : plugin.attachmentLocalizer
+    expect(localizer.options).toMatchObject({
+      attachmentFolder: lane === 'image' ? 'restored/images' : 'restored/files',
+      folderDateFormat: 'yyyy/MM', maxRetries: 3, retryDelay: 1000,
+      ...(lane === 'image' ? { jpegQuality: 68 } : {}),
+    })
+    expect(plugin.watchLocalizationRetry).toHaveBeenCalledTimes(1)
+  },
+)
+
 test('unload flushes pending attachment state after disposing the worker', () => {
   const { plugin } = harness()
   const flushAttachments = jest.fn(async () => {})

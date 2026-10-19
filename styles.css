@@ -440,3 +440,12 @@ button.notehelper-insert-variable {
 .notehelper-path-hint { margin-top: 4px; color: var(--text-warning); overflow-wrap: anywhere; }
 .notehelper-path-hint:empty { display: none; }
 .vip-status-container.is-pending { opacity: 0.5; transition: opacity 0.2s; }
+
+/* 正文变量缺失提示及恢复按钮。 */
+.notehelper-template-body-warning.is-visible {
+	border-left-color: var(--text-warning);
+	color: var(--text-warning);
+}
+.notehelper-template-body-warning-btn {
+	margin-left: 8px;
+}

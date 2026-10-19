@@ -12,7 +12,7 @@ import OmnivorePlugin from './main'
 import { addPathControls } from './settings/path-controls'
 import { addTemplateVariableButton } from './settings/variable-controls'
 import { normalizeApiKey, checkApiKeyFormat } from './settings/apiKeyValidation'
-import { PRESETS, PresetId, applyPreset } from './settings/presets'
+import { PRESETS, PresetId, applyPreset, normalizeSingleFileNameInput, presetWarningKey } from './settings/presets'
 import { standaloneMessageItem } from './settings/template'
 import {
   DEFAULT_SETTINGS,
@@ -32,6 +32,7 @@ import { analyzeTemplaterTags } from './sync/templaterRelay'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
 import { validateFrontMatterTemplate } from './settings/template'
 import { validateMergeFileTemplate } from './sync/mergeFileTemplate'
+import { templateHasBody } from './settings/templateBody'
 import {
   buildDiaryLinkView,
   renderDiaryLinkTemplate,
@@ -348,7 +349,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     const shortcuts = new Setting(host).setName(t('presets.title'))
     shortcuts.settingEl.addClass('notehelper-presets')
     const presetNames: Record<PresetId, TKey> = {
-      'no-date': 'presets.noDate', platform: 'presets.platform', separate: 'presets.separate', defaults: 'presets.defaults',
+      'no-date': 'presets.noDate', platform: 'presets.platform', separate: 'presets.separate', 'per-note-folder': 'presets.perNoteFolder', defaults: 'presets.defaults',
     }
     const fieldNames: Record<string, TKey> = {
       folder: 'settings.sync.articleFolder.name', attachmentFolder: 'settings.sync.attachmentFolder.name',
@@ -380,9 +381,11 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             const before = Object.fromEntries(Object.keys(changes).map(key => [key, this.plugin.settings[key as keyof typeof this.plugin.settings]]))
             const lines = Object.entries(changes).map(([key, value]) =>
               tf('presets.change', { name: fieldNames[key] ? t(fieldNames[key]) : key, from: show(key, before[key]), to: show(key, value) }))
-            if (before.mergeMode === MergeMode.ALL && changes.mergeMode === MergeMode.NONE) lines.push(t('presets.articlesUnmerged'))
+            const warning = presetWarningKey(this.plugin.settings.mergeMode, changes.mergeMode)
+            if (warning) lines.push(t(warning))
             new ConfirmModal(this.app, t(presetNames[preset.id]), lines.join('\n') + '\n\n' + t('presets.scope'), async () => {
               Object.assign(this.plugin.settings, changes)
+              this.plugin.refreshLocalizerOptions()
               await this.plugin.saveSettings(true)
               // 同一时间只保留最近一次的撤销
               this.undoNotices.forEach(n => n.hide())
@@ -395,6 +398,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
               this.undoNotices.push(notice)
               undo.onclick = () => { void (async () => {
                 Object.assign(this.plugin.settings, before)
+                this.plugin.refreshLocalizerOptions()
                 await this.plugin.saveSettings(true)
                 notice.hide(); this.display()
               })() }
@@ -481,6 +485,29 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     // 市场版不做 Templater 插值接力：任何 <% %> 标签都原样保留在笔记里
     msgs.push(t('settings.templater.marketPassthrough'))
     return msgs.join('\n')
+  }
+
+  /** 提示正文变量缺失，并提供恢复默认模板的入口；空值继续沿用默认模板。 */
+  private attachBodyWarning(
+    row: Setting,
+    initial: string,
+    restore: () => Promise<void>,
+  ): (value: string) => void {
+    const el = createDiv({ cls: 'notehelper-merge-template-status notehelper-template-body-warning' })
+    const text = el.createSpan()
+    const btn = el.createEl('button', {
+      text: t('settings.templateBodyWarning.restore'),
+      cls: 'notehelper-template-body-warning-btn',
+    })
+    btn.addEventListener('click', () => { void restore() })
+    const update = (value: string) => {
+      const missing = value.trim() !== '' && !templateHasBody(value)
+      el.toggleClass('is-visible', missing)
+      text.setText(missing ? t('settings.templateBodyWarning.text') : '')
+    }
+    row.settingEl.insertAdjacentElement('afterend', el)
+    update(initial)
+    return update
   }
 
   display(): void {
@@ -1245,6 +1272,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             if (!validateTemplate(value, t('settings.advanced.articleTemplate.name'), { allowTemplaterTags: true })) return
             updateArticleTemplaterStatus(value)
+            updateArticleBodyWarning(value)
             // if template is empty, use default template
             this.plugin.settings.template = value
               ? value
@@ -1269,6 +1297,15 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     // 提示条要跟在设置行下面，且首次打开就按现值校验一次
     articleTemplateSetting.settingEl.insertAdjacentElement('afterend', articleTplStatusEl)
     updateArticleTemplaterStatus(this.plugin.settings.template ?? '')
+    const updateArticleBodyWarning = this.attachBodyWarning(
+      articleTemplateSetting,
+      this.plugin.settings.template ?? '',
+      async () => {
+        this.plugin.settings.template = DEFAULT_SETTINGS.template
+        await this.plugin.saveSettings(true)
+        this.display()
+      },
+    )
 
 
     // ▸ 消息处理（二级折叠，默认收起）
@@ -1288,24 +1325,24 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             t('settings.sync.mergeMode.descIntro'),
             fragment.createEl('br'),
             fragment.createEl('br'),
-            fragment.createEl('strong', { text: t('settings.sync.mergeMode.labelNone') }),
-            `: ${t('settings.sync.mergeMode.descNone')}`,
-            fragment.createEl('br'),
             fragment.createEl('strong', { text: t('settings.sync.mergeMode.labelMessages') }),
             `: ${t('settings.sync.mergeMode.descMessages')}`,
             fragment.createEl('br'),
-            fragment.createEl('strong', { text: t('settings.sync.mergeMode.labelAll') }),
-            `: ${t('settings.sync.mergeMode.descAll')}`,
+            fragment.createEl('strong', { text: t('settings.sync.mergeMode.labelNone') }),
+            `: ${t('settings.sync.mergeMode.descNone')}`,
             fragment.createEl('br'),
             fragment.createEl('strong', { text: t('settings.sync.mergeMode.labelDual') }),
             `: ${t('settings.sync.mergeMode.descDual')}`,
+            fragment.createEl('br'),
+            fragment.createEl('strong', { text: t('settings.sync.mergeMode.labelAll') }),
+            `: ${t('settings.sync.mergeMode.descAll')}`,
           )
         })
       )
       .addDropdown((dropdown) =>
         dropdown
-          .addOption(MergeMode.NONE, t('settings.sync.mergeMode.optionNone'))
           .addOption(MergeMode.MESSAGES, t('settings.sync.mergeMode.optionMessages'))
+          .addOption(MergeMode.NONE, t('settings.sync.mergeMode.optionNone'))
           .addOption(MergeMode.DUAL, t('settings.sync.mergeMode.optionDual'))
           .addOption(MergeMode.ALL, t('settings.sync.mergeMode.optionAll'))
           .setValue(this.plugin.settings.mergeMode)
@@ -1318,6 +1355,12 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       )
     // 稳定选择器：real-obsidian e2e 用它定位合并模式这一行
     mergeModeSetting.settingEl.addClass('notehelper-merge-mode-row')
+
+    const showMerged = this.plugin.settings.mergeMode !== MergeMode.NONE
+    const showSingle = [MergeMode.NONE, MergeMode.DUAL].includes(this.plugin.settings.mergeMode)
+    if (showMerged) {
+      new Setting(messageBody).setName(t('messageSeparate.groupMerged')).setHeading()
+    }
 
     // 消息排序设置 - 只在合并模式不是 NONE 时显示
     if (this.plugin.settings.mergeMode !== MergeMode.NONE) {
@@ -1388,64 +1431,6 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       noMarkerSetting.settingEl.addClass('notehelper-no-marker-toggle-row')
     }
 
-    if ([MergeMode.NONE, MergeMode.DUAL].includes(this.plugin.settings.mergeMode)) {
-      const dual = this.plugin.settings.mergeMode === MergeMode.DUAL
-      new Setting(messageBody)
-        .setName(t('messageSeparate.enabled'))
-        .setDesc(t('messageSeparate.enabledDesc') + (dual ? ' ' + t('messageSeparate.enabledDescDual') : ''))
-        .addToggle(toggle => toggle.setValue(this.plugin.settings.messageSeparateEnabled).onChange(async value => {
-          this.plugin.settings.messageSeparateEnabled = value
-          await this.plugin.saveSettings(true); this.display()
-        })).settingEl.addClass('notehelper-message-separate-toggle')
-      if (this.plugin.settings.messageSeparateEnabled) {
-        for (const [key, label] of [
-          ['messageSeparateFolder', 'folder'], ['messageSeparateFolderDateFormat', 'folderDateFormat'],
-          ['messageSeparateFilename', 'filename'], ['messageSeparateFilenameDateFormat', 'filenameDateFormat'],
-        ] as const) {
-          const name = t(`messageSeparate.${label}`)
-          const row = new Setting(messageBody).setName(name).setDesc(t('messageSeparate.fallback'))
-          row.addText(text => text.setPlaceholder(DEFAULT_SETTINGS[key])
-            .setValue(key.endsWith('DateFormat') ? this.plugin.settings[key] : this.pathValue(text, key))
-            .onChange(async value => {
-              if (key.endsWith('DateFormat') ? !validateDateFormat(value, name) : !validateTemplate(value, name)) return
-              this.plugin.settings[key] = value; await this.plugin.saveSettings(true)
-            }))
-          row.settingEl.dataset.messageKey = key
-        }
-        for (const [key, label] of [
-          ['messageSeparateFrontMatterTemplate', 'frontMatterTemplate'], ['messageSeparateTemplate', 'template'],
-        ] as const) {
-          const statusEl = messageBody.createDiv({ cls: 'notehelper-merge-template-status' })
-          const updateStatus = (value: string) => {
-            const msg = this.templaterStatusText(value)
-            statusEl.toggleClass('is-visible', !!msg)
-            statusEl.setText(msg || '')
-          }
-          const name = t(`messageSeparate.${label}`)
-          const row = new Setting(messageBody).setName(name).setDesc(t('messageSeparate.templateDesc'))
-          row.addTextArea(text => {
-            text.setPlaceholder(t('messageSeparate.fallback'))
-              .setValue(this.plugin.settings[key])
-              .onChange(async value => {
-                if (!validateTemplate(value, name, { allowTemplaterTags: true })) return
-                this.plugin.settings[key] = value
-                updateStatus(value)
-                await this.plugin.saveSettings(true)
-              })
-            text.inputEl.rows = 4
-            text.inputEl.cols = 30
-            addTemplateVariableButton(this.app, text, 'note')
-          })
-          row.addExtraButton(button => button.setIcon('reset').setTooltip(t('messageSeparate.reset')).onClick(async () => {
-            this.plugin.settings[key] = ''; await this.plugin.saveSettings(true); this.display()
-          }))
-          row.settingEl.dataset.messageKey = key
-          row.settingEl.insertAdjacentElement('afterend', statusEl)
-          updateStatus(this.plugin.settings[key])
-        }
-      }
-    }
-
     // 消息文件夹设置 - 只在合并模式不是 NONE 时显示
     if (this.plugin.settings.mergeMode !== MergeMode.NONE) {
       new Setting(messageBody)
@@ -1491,7 +1476,12 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             .setValue(this.pathValue(text, 'singleFileName'))
             .onChange(async (value) => {
               if (!validateTemplate(value, t('settings.sync.messageFileName.name'))) return
-              this.plugin.settings.singleFileName = value || '同步助手_{{{date}}}'
+              const stored = normalizeSingleFileNameInput(value)
+              this.plugin.settings.singleFileName = stored
+              if (stored !== value) {
+                text.setValue(stored)
+                text.inputEl.dispatchEvent(new Event('input'))
+              }
               await this.plugin.saveSettings(true)
             }),
         )
@@ -1627,6 +1617,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     }
 
 
+    if (showMerged) {
     // Templater 用法实时提示条（与合并文件模板的提示条同款样式）
     const assistantTplStatusEl = messageBody.createDiv({
       cls: 'notehelper-merge-template-status',
@@ -1652,6 +1643,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             if (!validateTemplate(value, t('settings.advanced.assistantTemplate.name'), { allowTemplaterTags: true })) return
             updateAssistantTemplaterStatus(value)
+            updateAssistantBodyWarning(value)
             this.plugin.settings.wechatMessageTemplate = value || '---\\n## 📅 {{{dateSaved}}}\\n{{{content}}}'
             await this.plugin.saveSettings(true)
           })
@@ -1673,6 +1665,15 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     // 提示条要跟在设置行下面，且首次打开就按现值校验一次
     assistantTemplateSetting.settingEl.insertAdjacentElement('afterend', assistantTplStatusEl)
     updateAssistantTemplaterStatus(this.plugin.settings.wechatMessageTemplate ?? '')
+    const updateAssistantBodyWarning = this.attachBodyWarning(
+      assistantTemplateSetting,
+      this.plugin.settings.wechatMessageTemplate ?? '',
+      async () => {
+        this.plugin.settings.wechatMessageTemplate = DEFAULT_SETTINGS.wechatMessageTemplate
+        await this.plugin.saveSettings(true)
+        this.display()
+      },
+    )
 
     // 聊天记录时间样式：多选转发里每条内层消息前的 **yyyy/MM/dd HH:mm:ss** 怎么显示
     // （默认 = 历史硬编码的灰色小字；变量 timestamp / date / time / timeShort + 内置函数）
@@ -1710,6 +1711,76 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           })
       })
     chatRecordTimestampSetting.settingEl.addClass('notehelper-chat-record-timestamp-row')
+    }
+
+    // DUAL 同时显示两组，单条消息设置排在合并文件设置之后。
+    if (showSingle) {
+      new Setting(messageBody).setName(t('messageSeparate.groupSingle')).setHeading()
+      const dual = this.plugin.settings.mergeMode === MergeMode.DUAL
+      new Setting(messageBody)
+        .setName(t('messageSeparate.enabled'))
+        .setDesc(t('messageSeparate.enabledDesc') + (dual ? ' ' + t('messageSeparate.enabledDescDual') : ''))
+        .addToggle(toggle => toggle.setValue(this.plugin.settings.messageSeparateEnabled).onChange(async value => {
+          this.plugin.settings.messageSeparateEnabled = value
+          await this.plugin.saveSettings(true); this.display()
+        })).settingEl.addClass('notehelper-message-separate-toggle')
+      if (this.plugin.settings.messageSeparateEnabled) {
+        for (const [key, label] of [
+          ['messageSeparateFolder', 'folder'], ['messageSeparateFolderDateFormat', 'folderDateFormat'],
+          ['messageSeparateFilename', 'filename'], ['messageSeparateFilenameDateFormat', 'filenameDateFormat'],
+        ] as const) {
+          const name = t(`messageSeparate.${label}`)
+          const row = new Setting(messageBody).setName(name).setDesc(tf('messageSeparate.fallbackDefault', { value: DEFAULT_SETTINGS[key] }))
+          row.addText(text => text.setPlaceholder(DEFAULT_SETTINGS[key])
+            .setValue(key.endsWith('DateFormat') ? this.plugin.settings[key] : this.pathValue(text, key))
+            .onChange(async value => {
+              if (key.endsWith('DateFormat') ? !validateDateFormat(value, name) : !validateTemplate(value, name)) return
+              this.plugin.settings[key] = value; await this.plugin.saveSettings(true)
+            }))
+          row.settingEl.dataset.messageKey = key
+        }
+        for (const [key, label] of [
+          ['messageSeparateFrontMatterTemplate', 'frontMatterTemplate'], ['messageSeparateTemplate', 'template'],
+        ] as const) {
+          const statusEl = messageBody.createDiv({ cls: 'notehelper-merge-template-status' })
+          let updateBodyWarning: ((value: string) => void) | undefined
+          const updateStatus = (value: string) => {
+            const msg = this.templaterStatusText(value)
+            statusEl.toggleClass('is-visible', !!msg)
+            statusEl.setText(msg || '')
+          }
+          const name = t(`messageSeparate.${label}`)
+          const row = new Setting(messageBody).setName(name).setDesc(t('messageSeparate.templateDesc'))
+          row.addTextArea(text => {
+            text.setPlaceholder(t('messageSeparate.fallback'))
+              .setValue(this.plugin.settings[key])
+              .onChange(async value => {
+                if (!validateTemplate(value, name, { allowTemplaterTags: true })) return
+                this.plugin.settings[key] = value
+                updateStatus(value)
+                updateBodyWarning?.(value)
+                await this.plugin.saveSettings(true)
+              })
+            text.inputEl.rows = 4
+            text.inputEl.cols = 30
+            addTemplateVariableButton(this.app, text, 'note')
+          })
+          row.addExtraButton(button => button.setIcon('reset').setTooltip(t('messageSeparate.reset')).onClick(async () => {
+            this.plugin.settings[key] = ''; await this.plugin.saveSettings(true); this.display()
+          }))
+          row.settingEl.dataset.messageKey = key
+          row.settingEl.insertAdjacentElement('afterend', statusEl)
+          updateStatus(this.plugin.settings[key])
+          if (key === 'messageSeparateTemplate') {
+            updateBodyWarning = this.attachBodyWarning(row, this.plugin.settings[key], async () => {
+              this.plugin.settings[key] = DEFAULT_SETTINGS[key]
+              await this.plugin.saveSettings(true)
+              this.display()
+            })
+          }
+        }
+      }
+    }
 
 
     const emailBody = this.createSection(
@@ -1767,6 +1838,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         ['emailTemplate', 'template'],
       ] as const) {
         const statusEl = emailBody.createDiv({ cls: 'notehelper-merge-template-status' })
+        let updateBodyWarning: ((value: string) => void) | undefined
         const updateStatus = (value: string) => {
           const msg = this.templaterStatusText(value)
           statusEl.toggleClass('is-visible', !!msg)
@@ -1783,6 +1855,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
                 if (!validateTemplate(value, name, { allowTemplaterTags: key === 'emailTemplate' })) return
                 this.plugin.settings[key] = value
                 updateStatus(value)
+                updateBodyWarning?.(value)
                 await this.plugin.saveSettings(true)
               })
             text.inputEl.rows = 4
@@ -1798,6 +1871,13 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         row.settingEl.addClass(`notehelper-email-${label}-row`)
         row.settingEl.insertAdjacentElement('afterend', statusEl)
         updateStatus(this.plugin.settings[key])
+        if (key === 'emailTemplate') {
+          updateBodyWarning = this.attachBodyWarning(row, this.plugin.settings[key], async () => {
+            this.plugin.settings[key] = DEFAULT_SETTINGS[key]
+            await this.plugin.saveSettings(true)
+            this.display()
+          })
+        }
       }
     }
 

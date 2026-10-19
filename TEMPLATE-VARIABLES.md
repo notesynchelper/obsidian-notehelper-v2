@@ -262,8 +262,10 @@ tags: [消息]
 文件夹右侧的文件夹按钮可选择已有目录或输入新目录；选中后替换整个字段，目录在同步时创建。
 变量按钮把所选变量追加为一级子目录；文件名变量在光标处插入，可替换选区。下方示例使用最近一篇笔记的数据和对应日期格式，并应用实际路径的字符清洗规则。
 
-「路径设置 → 快捷设置」提供不按日期分文件夹、按平台分文件夹、消息每条单独一篇、恢复默认路径。确认前逐项显示差异，应用后可在本次设置页会话内撤销；已有文件不移动。
+「路径设置 → 快捷设置」提供不按日期分文件夹、按平台分文件夹、消息每条单独一篇、每篇笔记一个文件夹（图片放一起）、恢复默认路径。确认前逐项显示差异，应用后可在本次设置页会话内撤销，并立即刷新本地化设置；已有文件不移动。图片目录中的 `{{{title}}}` 使用实际笔记文件名（不含扩展名）。
 
-「消息单独设置」默认关闭，在不合并或双写时可开启。文件夹、文件名、两项日期格式、笔记属性及正文模板分别留空时使用文章对应值。双写的合并副本继续使用原合并模板。同名消息按现有规则编号。
+「消息保存方式」分为按天合并、每条单独、双写和全部合并。合并文件与单条消息的设置分别分组显示；「单条消息使用独立设置」默认关闭，在每条单独或双写时可开启。文件夹、文件名、两项日期格式、笔记属性及正文模板分别留空时使用文章对应值。双写的合并副本继续使用原合并模板。同名消息按现有规则编号。清空合并文件名后保存为 `{{{date}}}`，只按日期命名。
 
-Folder pickers replace the whole folder field; variable buttons append a folder segment or insert a file-name variable at the selection. Previews use a recent note and the same path sanitization as sync. Presets show a confirmation diff and support undo during the current settings session. They do not move existing files. Standalone-message settings default to off; blank fields inherit article settings, while the merged copy in dual-write mode retains its merge template.
+正文模板中没有 `content` 变量时，设置页会提示并提供恢复默认按钮。市场版仍不执行 Templater 标签。
+
+Folder pickers replace the whole folder field; variable buttons append a folder segment or insert a file-name variable at the selection. Previews use a recent note and the same path sanitization as sync. The five presets include one folder per note with images beside it. Presets show a confirmation diff, support undo during the current settings session, and immediately refresh localization settings. They do not move existing files. Image-folder title variables use the actual note basename. Standalone-message settings default to off; blank fields inherit article settings, while the merged copy in dual-write mode retains its merge template. Clearing the merged file name stores `{{{date}}}`. Body templates without `content` show a warning and a restore-default option.

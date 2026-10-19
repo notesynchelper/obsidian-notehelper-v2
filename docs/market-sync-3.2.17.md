@@ -1,6 +1,6 @@
 # 市场版 3.2.17 同步记录
 
-同步日期：2026-10-19。目标仓库：`notesynchelper/obsidian-notehelper-v2`。仅在本地修改和提交，不推送、不创建 Release、不修改版本提醒端点或部署。
+同步日期：2026-10-19。目标仓库：`notesynchelper/obsidian-notehelper-v2`。本记录保留首轮仅本地同步的范围与证据。随后用户授权纳入主项目未发版设置功能并推送 v2；本记录中「故意不带」的设置功能限制及「不推送」边界由后续记录 [设置功能补齐](market-settings-followup.md) 取代。Release、版本提醒端点和部署仍不在授权范围内。
 
 ## 基点与边界
 

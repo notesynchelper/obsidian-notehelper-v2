@@ -35,7 +35,7 @@ test('message profile opt-in, field fallback, independent defaults', () => {
   expect(resolveArticleLikeProfile('message',s)).toMatchObject({folder:s.messageSeparateFolder,template:'M',filename:s.filename})
   expect(resolveArticleLikeProfile('article',s).template).toBe(s.template)
 })
-test('four presets are minimal patches, preserve mixed segments, and are idempotent', () => {
+test('presets are minimal patches, preserve mixed segments, and are idempotent', () => {
   const s = {...DEFAULT_SETTINGS,folder:'A/{{{yearSaved}}}-{{{monthSaved}}}/prefix-{{{date}}}/{{{siteName}}}'}
   expect(applyPreset('no-date', s).folder).toBe('A/prefix-{{{date}}}/{{{siteName}}}')
   expect(applyPreset('platform', DEFAULT_SETTINGS).folder).toBe('笔记同步助手/{{{siteName}}}')
@@ -73,4 +73,24 @@ test('presets never touch diary settings or fields hidden on the settings page',
   for (const key of ['emailFolder', 'messageFolder', 'messageSeparateFolder', 'imageAttachmentFolder']) expect(isVisibleSetting(key, shown)).toBe(true)
   expect(Object.keys(applyPreset('defaults', shown)).sort()).toEqual(['emailFolder', 'folder', 'imageAttachmentFolder', 'messageFolder', 'messageSeparateFolder'])
   expect(isVisibleSetting('messageSeparateEnabled', s)).toBe(true)
+})
+
+test('message groups follow merge mode; separate preset changes mode and toggle together', () => {
+  const mergedKeys = ['messageFolder', 'singleFileName', 'singleFileDateFormat', 'mergeFileTemplate',
+    'wechatMessageTemplate', 'chatRecordTimestampTemplate', 'messageSortOrder', 'disableMessageMarkers']
+  const expected: Record<MergeMode, { merged: boolean; single: boolean }> = {
+    [MergeMode.MESSAGES]: { merged: true, single: false },
+    [MergeMode.NONE]: { merged: false, single: true },
+    [MergeMode.DUAL]: { merged: true, single: true },
+    [MergeMode.ALL]: { merged: true, single: false },
+  }
+  for (const mode of Object.values(MergeMode)) {
+    const s = { ...DEFAULT_SETTINGS, mergeMode: mode }
+    for (const key of mergedKeys) expect(isVisibleSetting(key, s)).toBe(expected[mode].merged)
+    expect(isVisibleSetting('messageSeparateEnabled', s)).toBe(expected[mode].single)
+  }
+  for (const mode of [MergeMode.MESSAGES, MergeMode.ALL]) {
+    expect(applyPreset('separate', { ...DEFAULT_SETTINGS, mergeMode: mode }))
+      .toEqual({ mergeMode: MergeMode.NONE, messageSeparateEnabled: true })
+  }
 })

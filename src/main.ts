@@ -15,7 +15,7 @@ import { getItems, deleteArticleById, fetchVipStatus, type VipStatus } from './a
 import { log, logError, Logger } from './logger'
 import { DEFAULT_SETTINGS, DeviceAutoSyncConfig, ImageMode, MIN_AUTO_SYNC_FREQUENCY, MergeMode, OLD_DEFAULT_FRONT_MATTER_TEMPLATE, PREV_DEFAULT_FRONT_MATTER_TEMPLATE, OmnivoreSettings, PendingBurnDelete, PluginLanguage, migrateDiaryLinkTemplate } from './settings'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
-import { setForcedLang, t } from './i18n'
+import { setForcedLang, t, tf } from './i18n'
 import {
   getDeviceAutoSync,
   setDeviceAutoSync,
@@ -79,6 +79,7 @@ import {
   shouldAutoOpenOnFirstSync,
   shouldSuppressFirstSyncOnLoad,
 } from './sync/FirstSyncOpener'
+import { decideMergeIntro, shouldSuppressMergeIntroOnLoad } from './sync/MergeIntro'
 import { resolveEffectiveSyncSettings, resolveDebugSyncAt } from './sync/DebugMode'
 import { UpdateReminder } from './updateReminder'
 import {
@@ -382,6 +383,13 @@ export default class OmnivorePlugin extends Plugin {
       const hasSyncHistory =
         !!this.settings.syncAt ||
         (!!deviceCursors && Object.values(deviceCursors).some((c) => !!c))
+      if (shouldSuppressMergeIntroOnLoad({
+        alreadyShown: this.settings.mergeIntroShown,
+        initialSyncCompleted: this.settings.initialSyncCompleted,
+        hasSyncHistory,
+      })) {
+        this.settings.mergeIntroShown = true
+      }
       if (shouldSuppressFirstSyncOnLoad({
         firstSyncAutoOpened: this.settings.firstSyncAutoOpened,
         initialSyncCompleted: this.settings.initialSyncCompleted,
@@ -500,6 +508,25 @@ export default class OmnivorePlugin extends Plugin {
     }
   }
 
+  /** 应用或撤销预设时更新现有实例，保留正在执行和待重试的任务。 */
+  public refreshLocalizerOptions(): void {
+    const s = this.settings
+    this.imageLocalizer?.updateOptions({
+      enablePngToJpeg: s.enablePngToJpeg,
+      jpegQuality: s.jpegQuality,
+      attachmentFolder: s.imageAttachmentFolder,
+      folderDateFormat: s.folderDateFormat,
+      maxRetries: s.imageDownloadRetries,
+      retryDelay: 1000,
+    })
+    this.attachmentLocalizer?.updateOptions({
+      attachmentFolder: s.attachmentFolder,
+      folderDateFormat: s.folderDateFormat,
+      maxRetries: s.imageDownloadRetries,
+      retryDelay: 1000,
+    })
+  }
+
   /**
    * 初始化图片本地化器（并发安全：同时调用只会构造一次）
    */
@@ -509,15 +536,6 @@ export default class OmnivorePlugin extends Plugin {
 
     const doInit = async (): Promise<void> => {
       try {
-        const options: ImageProcessOptions = {
-          enablePngToJpeg: this.settings.enablePngToJpeg,
-          jpegQuality: this.settings.jpegQuality,
-          attachmentFolder: this.settings.imageAttachmentFolder,
-          folderDateFormat: this.settings.folderDateFormat,
-          maxRetries: this.settings.imageDownloadRetries,
-          retryDelay: 1000, // 1秒重试延迟
-        }
-
         // 构造 url→localPath 持久化存储（存放在插件目录的侧边 JSON 文件里）
         const urlLocalMap = new UrlLocalMap(this.createSidecarJsonPersister('url-local-map.json'))
         await urlLocalMap.load()
@@ -530,6 +548,15 @@ export default class OmnivorePlugin extends Plugin {
 
         // 双重检查：load 期间其它 caller 已经完成初始化时直接复用
         if (this.imageLocalizer) return
+        // 异步加载期间可能应用/撤销路径配方，构造前读取当前设置。
+        const options: ImageProcessOptions = {
+          enablePngToJpeg: this.settings.enablePngToJpeg,
+          jpegQuality: this.settings.jpegQuality,
+          attachmentFolder: this.settings.imageAttachmentFolder,
+          folderDateFormat: this.settings.folderDateFormat,
+          maxRetries: this.settings.imageDownloadRetries,
+          retryDelay: 1000, // 1秒重试延迟
+        }
         this.imageLocalizer = new ImageLocalizer(this.app, options, urlLocalMap, pendingStore)
         const localizer = this.imageLocalizer
         this.watchLocalizationRetry(pendingStore, async () => {
@@ -1934,6 +1961,35 @@ export default class OmnivorePlugin extends Plugin {
         } catch (error) {
           logError('首次同步自动打开流程失败（不影响同步）:', error)
         }
+      }
+
+      // 合并文件一次性说明：首次真的写出消息合并文件后，Notice 解释 + 打开该合并笔记。
+      // 标志在游标落盘之后整份保存，避免覆盖新游标；失败只记录，不影响同步。
+      try {
+        const intro = decideMergeIntro({
+          alreadyShown: this.settings.mergeIntroShown,
+          debugActive,
+          successCount,
+          mergeMode,
+          mergedPaths: Array.from(mergeGroups.values())
+            .filter(g => g.items.length > 0)
+            .map(g => g.file.path),
+          manualSync,
+        })
+        if (intro.notify && intro.path) {
+          this.settings.mergeIntroShown = true
+          await this.saveSettings(true)
+          const name = intro.path.split('/').pop()!.replace(/\.md$/, '')
+          new Notice(tf('mergeIntro.notice', { name }), 20000)
+          const target = this.app.vault.getAbstractFileByPath(intro.path)
+          if (intro.open && target instanceof TFile) {
+            // 一律新标签，绝不替换用户当前叶子（可能有未保存内容）。
+            const leaf = this.app.workspace.getLeaf('tab')
+            await leaf.openFile(target, { active: intro.activate })
+          }
+        }
+      } catch (error) {
+        logError('合并文件说明流程失败（不影响同步）:', error)
       }
 
       // 调试模式：每次手动调试同步，都自动打开本轮拉到的最新笔记（桌面≤3 / 手机≤1），

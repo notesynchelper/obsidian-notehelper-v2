@@ -226,6 +226,7 @@ export const DEFAULT_SETTINGS: OmnivoreSettings = {
   // 设备级同步游标
   deviceSyncCursors: {},                 // 各设备独立的同步时间戳
   initialSyncCompleted: false,           // 首次同步是否已完成
+  mergeIntroShown: false,                // 合并文件一次性说明（Notice + 自动打开）是否已出现过
   firstSyncAutoOpened: false,            // 首次同步是否已自动打开笔记并弹过说明（只触发一次）
   // 设备级自动同步配置（每台设备独立的 frequency/syncOnStart）
   deviceAutoSync: {},                    // { [deviceId]: { frequency, syncOnStart } }
@@ -330,6 +331,7 @@ export interface OmnivoreSettings {
   deviceSyncCursors: Record<string, string>  // 各设备独立的同步时间戳
   initialSyncCompleted: boolean              // 首次同步是否已完成
   // 首次同步：成功落盘+本地化后自动打开最新笔记并延迟弹窗说明，整个生命周期只触发一次
+  mergeIntroShown: boolean                   // 合并文件说明是否已弹过（只触发一次；老用户加载时直接置 true）
   firstSyncAutoOpened: boolean               // 首次同步自动打开+弹窗是否已发生过
   // 高级/测试用：覆盖首次同步说明弹窗的延迟（毫秒）。
   // 生产用户不设置（恒为 undefined → 用 FIRST_SYNC_NOTICE_DELAY_MS=15000）；仅 E2E harness 写入以加速测试。
