@@ -6,7 +6,9 @@ import type { Moment } from 'moment'
 // 可调用签名（本插件只用到 ISO 字符串入参）。
 const momentFn = moment as unknown as (input: string) => Moment
 import { OmnivoreSettings } from '../settings'
-import { formatDate } from '../util'
+import { formatDate, replaceIllegalCharsFolder } from '../util'
+import type { Item } from '@omnivore-app/api'
+import { render } from '../settings/template'
 import { log, logError } from '../logger'
 import {
   getDailyNoteSettings,
@@ -84,10 +86,17 @@ export class DailyNoteResolver {
     return formatDate(dateISO, config.dateFormat)
   }
 
-  async resolve(dateISO: string): Promise<ResolveResult> {
+  diaryPath(dateISO: string, item?: Item): string {
     const config = this.getEffectiveDiaryConfig()
     const dateStr = this.formatDiaryDate(dateISO, config)
-    const diaryPath = normalizePath(`${config.folder}/${dateStr}.md`)
+    const folder = config.formatSource === 'manual' && config.folder.includes('{{')
+      ? replaceIllegalCharsFolder(render(item || { savedAt: dateISO, title: '', url: '' } as Item, config.folder, config.dateFormat, {pathSafe:true}))
+      : config.folder
+    return normalizePath(`${folder}/${dateStr}.md`)
+  }
+
+  async resolve(dateISO: string, item?: Item): Promise<ResolveResult> {
+    const diaryPath = this.diaryPath(dateISO, item)
 
     const existingFile = this.app.vault.getAbstractFileByPath(diaryPath)
     if (existingFile instanceof TFile) {

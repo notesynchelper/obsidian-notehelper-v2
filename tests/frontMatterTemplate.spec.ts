@@ -198,6 +198,48 @@ source: example.com`)
     const input = 'description: '
     expect(sanitizeRenderedYaml(input)).toBe(input)
   })
+
+  // ↓ 2026-10-09「天圆地方」工单（X/头条属性整段丢失）：用户 7 个 key 全是中文，
+  //   旧正则 \w 不含汉字 → 行永不匹配 → 兜底加不了引号 → omnivore_error 全丢。
+  it('中文 key 的值含「冒号+空格」时自动加引号（X/微博标题形态 `作者: 推文`）', () => {
+    const input = '原标题: Suu: 我发现很多大学生都已经会翻墙了'
+    expect(sanitizeRenderedYaml(input)).toBe(
+      '原标题: "Suu: 我发现很多大学生都已经会翻墙了"',
+    )
+  })
+
+  it('中文 key 的值以 @ 开头时自动加引号（头条微头条/小红书摘要形态）', () => {
+    const input = '前言摘要: @AI巨风 发布的微头条 146人阅读'
+    expect(sanitizeRenderedYaml(input)).toBe(
+      '前言摘要: "@AI巨风 发布的微头条 146人阅读"',
+    )
+  })
+
+  it('ASCII+中文混合 key（如 Tags标签）同样匹配', () => {
+    const input = 'Tags标签: 副标: 说明'
+    expect(sanitizeRenderedYaml(input)).toBe('Tags标签: "副标: 说明"')
+  })
+
+  it('中文 key 的普通值不加引号（不因 key 含汉字就误伤）', () => {
+    const input = '原标题: 正常的中文标题'
+    expect(sanitizeRenderedYaml(input)).toBe(input)
+  })
+
+  // ↓ codex 二审 P2：块标量头（| / > / |- 等）不是"值"，加引号会毁掉下面的缩进正文。
+  //   扩展中文 key 前它只影响 ASCII key（旧伤），扩展后中文 key 也中招——一并守住。
+  it('块标量头不加引号：另一行触发兜底时，中文 key 的 `描述: |` 保持原样', () => {
+    const input = 'title: @user\n描述: |\n  一段正文'
+    expect(sanitizeRenderedYaml(input)).toBe('title: "@user"\n描述: |\n  一段正文')
+  })
+
+  it('块标量头不加引号（ASCII key 同理，折叠/保留指示符都算）', () => {
+    expect(sanitizeRenderedYaml('title: @user\ndesc: |\n  body')).toBe(
+      'title: "@user"\ndesc: |\n  body',
+    )
+    expect(sanitizeRenderedYaml('title: @user\nfolded: >-\n  body')).toBe(
+      'title: "@user"\nfolded: >-\n  body',
+    )
+  })
 })
 
 /**

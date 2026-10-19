@@ -45,6 +45,15 @@ function makeMessage(overrides: Partial<Item> = {}): Item {
 }
 
 describe('A1 助手消息模板：内置函数可用', () => {
+  test('新增消息变量同时用于合并正文和日记锚点，保留原始标题', () => {
+    const item = makeMessage({ title: '同步助手_20261019_会议纪要_文本' })
+    const template = '## {{{messageTitle}}} {{{messageType}}}\n{{{rawTitle}}}\n{{{content}}}'
+    expect(renderWeChatMessageSimple(item, DATE_FORMAT, template)).toBe(
+      '## 会议纪要 文本\n同步助手_20261019_会议纪要_文本\n今天开会讨论了新功能的设计方案',
+    )
+    expect(generateMessageAnchor(item, DATE_FORMAT, template)).toBe('会议纪要 文本')
+  })
+
   test('{{#formatDate}} 按指定格式渲染，而不是渲染成空', () => {
     const item = makeMessage()
     const rendered = renderWeChatMessageSimple(

@@ -36,7 +36,7 @@ import {
   emptyLocalizationResult,
   LocalizationResult,
 } from '../common/localizationResult'
-import { unhideNameSegment, unhideVaultPath } from '../util'
+import { unhideNameSegment, replaceIllegalCharsFolder } from '../util'
 import { PendingLocalizeStore } from '../imageLocalizer/pendingQueueStore'
 
 /**
@@ -427,7 +427,7 @@ export class AttachmentLocalizer {
       { pathSafe: true, isMessage: meta?.isMessage },
     )
 
-    return unhideVaultPath(normalizePath(folderPath))
+    return replaceIllegalCharsFolder(normalizePath(folderPath))
   }
 
   /**

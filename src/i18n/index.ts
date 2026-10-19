@@ -135,5 +135,12 @@ export function t(key: TKey): string {
   return fromEn !== undefined ? fromEn : (key)
 }
 
+/** t() with `{name}` placeholders filled from vars. */
+export function tf(key: TKey, vars: Record<string, string | number>): string {
+  return t(key).replace(/\{(\w+)\}/g, (m, name: string) =>
+    name in vars ? String(vars[name]) : m,
+  )
+}
+
 // Exposed for tests so we don't have to mutate window.localStorage in node.
 export const __dicts__ = DICTS

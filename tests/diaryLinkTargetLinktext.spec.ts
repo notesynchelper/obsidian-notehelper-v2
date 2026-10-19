@@ -111,3 +111,14 @@ describe('日记链接目标：交给 Obsidian 算唯一写法', () => {
 		expect(files.get(DIARY_PATH)).toContain('[[2024-01-15#这个链接的设置最好能|')
 	})
 })
+
+it('independent messages link to the whole note with clean title, merged links retain anchors', async () => {
+ const { app, files } = makeApp({})
+ const settings = {...DEFAULT_SETTINGS, enableDiaryLinks:true, messageSeparateEnabled:true, diaryWritePosition:DiaryWritePosition.BOTTOM}
+ const resolver = {resolve:jest.fn(async()=>({file:new MockTFile(DIARY_PATH)}))} as unknown as DailyNoteResolver
+ const p = new DiaryLinkProcessor(app,settings,resolver)
+ p.addLink({...message('clean','正文摘要'),title:'干净标题',rawTitle:'同步助手_20240115_干净标题_文本'},'干净标题',undefined,'Messages/干净标题.md')
+ await p.processAll()
+ expect(files.get(DIARY_PATH)).toContain('[[干净标题|干净标题]]')
+ expect(files.get(DIARY_PATH)).not.toContain('#正文摘要')
+})

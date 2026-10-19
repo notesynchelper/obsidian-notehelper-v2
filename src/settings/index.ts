@@ -167,6 +167,21 @@ export const DEFAULT_SETTINGS: OmnivoreSettings = {
   version: '0.0.0',
   mergeMode: MergeMode.MESSAGES,  // 默认仅合并企微消息
   messageSortOrder: MessageSortOrder.DESC,  // 消息排序：默认按时间降序（新消息在前）
+  messageSeparateEnabled: false,
+  messageSeparateFolder: '笔记同步助手/消息/{{{date}}}',
+  messageSeparateFolderDateFormat: 'yyyy-MM-dd',
+  messageSeparateFilename: '{{{title}}}',
+  messageSeparateFilenameDateFormat: 'yyyy-MM-dd',
+  messageSeparateFrontMatterTemplate: '',
+  messageSeparateTemplate: '',
+  emailSettingsEnabled: false,
+  emailIncludeAttachmentDocs: true,
+  emailFolder: '笔记同步助手/邮件/{{{date}}}',
+  emailFolderDateFormat: 'yyyy-MM-dd',
+  emailFilename: '{{{title}}}',
+  emailFilenameDateFormat: 'yyyy-MM-dd',
+  emailFrontMatterTemplate: '',
+  emailTemplate: '',
   messageFolder: '',  // 消息文件夹路径（空字符串时回退到 folder）
   frequency: 0,
   intervalId: 0,
@@ -259,6 +274,21 @@ export interface OmnivoreSettings {
   version: string
   mergeMode: MergeMode
   messageSortOrder: MessageSortOrder  // 消息排序方式
+  messageSeparateEnabled: boolean
+  messageSeparateFolder: string
+  messageSeparateFolderDateFormat: string
+  messageSeparateFilename: string
+  messageSeparateFilenameDateFormat: string
+  messageSeparateFrontMatterTemplate: string
+  messageSeparateTemplate: string
+  emailSettingsEnabled: boolean
+  emailIncludeAttachmentDocs: boolean
+  emailFolder: string
+  emailFolderDateFormat: string
+  emailFilename: string
+  emailFilenameDateFormat: string
+  emailFrontMatterTemplate: string
+  emailTemplate: string
   messageFolder: string  // 消息文件夹路径（空字符串时回退到 folder）
   frequency: number
   intervalId: number

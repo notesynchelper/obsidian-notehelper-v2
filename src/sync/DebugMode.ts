@@ -23,6 +23,14 @@ import { DEFAULT_SETTINGS, OmnivoreSettings } from '../settings'
  * 意图，非「位置」）、不含内容模板、不含图片/附件文件夹。
  */
 export const DEBUG_OVERRIDE_KEYS = [
+  'messageSeparateFolder',
+  'messageSeparateFolderDateFormat',
+  'messageSeparateFilename',
+  'messageSeparateFilenameDateFormat',
+  'emailFolder',
+  'emailFolderDateFormat',
+  'emailFilename',
+  'emailFilenameDateFormat',
   'folder',
   'folderDateFormat',
   'messageFolder',
@@ -58,6 +66,8 @@ export function resolveEffectiveSyncSettings(
     >)[key]
   }
   // 诊断绝不删数据：调试模式强制关闭阅后即焚，本轮不收集删除候选、不删云端、不写 pendingBurnDeletes。
+  eff.messageSeparateEnabled = false
+  eff.emailSettingsEnabled = false
   eff.burnAfterReading = false
   return eff
 }

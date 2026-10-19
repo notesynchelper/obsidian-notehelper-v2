@@ -42,7 +42,10 @@
 ## 📄 文章基本信息 / Article Basic Info
 
 - `{{{id}}}` - 文章ID / Article ID
-- `{{{title}}}` - 文章标题 / Article title
+- `{{{title}}}` - 文章标题；开启「消息单独设置」的单篇消息使用去掉日期与类型前后缀的标题 / Article title, or clean standalone message title
+- `{{{rawTitle}}}` - 原始标题，所有模式可用 / Original title
+- `{{{messageTitle}}}` - 消息干净标题，非消息为原始标题 / Clean message title, original title for articles
+- `{{{messageType}}}` - 文本、图片、视频、语音、文件、聊天记录、笔记、媒体；非消息或未知类型为空 / Message type, empty for articles or unknown suffixes
 - `{{{author}}}` - 作者 / Author
 - `{{{siteName}}}` - 网站名称 / Website name
 - `{{{originalUrl}}}` - 原文链接 / Original URL
@@ -137,27 +140,13 @@ type: {{#mapValue}}{{{siteName}}}|抖音=视频转图文,快手=视频转图文,
 > `[\s\S]` 是「任意字符（含换行）」——转发的聊天片段标题里会带换行，用它才抠得到。
 > 抠完同名的消息（多条「聊天记录」）不会互相覆盖，插件会自动写成 `聊天记录 2`、`聊天记录 3`。
 
-## 🔗 Templater 变量接力 / Templater Interop（文章模板 + 消息模板）
+## 🔗 Templater 标签 / Templater Tags
 
-装有 [Templater](https://github.com/SilentVoid13/Templater) 插件时，**文章模板**与
-**助手消息模板**里的 `<% %>` 插值会在**每轮同步开始时**由 Templater 渲染一次，例如：
+市场版不执行 Templater 插值，也不调用其它插件的命令。模板中的 `<% %>` 标签原样保留；
+同步创建文件时保留触发抑制护栏，避免网页正文里的模板命令被自动执行。
+每条消息的时间请使用 `{{{dateSaved}}}` 或 `{{{timeSavedShort}}}`。
 
-```
-<% tp.web.random_picture("512x384", "landscape") %>
-日期:: [[<% tp.date.now("YYYY-MM-DD") %>]]
-{{{content}}}
-```
-
-规则 / Rules：
-
-- 只支持 `<% 表达式 %>` 插值；`<%* 执行块 %>` 不支持，会**原样保留**在笔记里不执行。
-- 不支持依赖目标文件上下文的调用：`tp.file.*`、`tp.frontmatter.*`、`tp.config.*`、
-  `tp.hooks.*`、`tp.system.prompt/suggester` —— 一律原样保留（渲染时目标文件往往尚未创建，
-  给出错误值比不渲染更糟）。
-- `tp.date.now` 取的是**本轮同步时刻**（一轮内所有消息相同）；每条消息各自的时间请继续用
-  `{{{dateSaved}}}`。
-- 未安装/未启用 Templater、渲染失败或超时：标签原样落盘，同步照常（非破坏降级）。
-- 未闭合的 `<%` 或 `<%%` 会让 Templater 静默放弃整个模板的渲染，设置页会实时提醒。
+The marketplace build preserves `<% %>` tags as text and does not invoke Templater interpolation or other plugins' commands. A creation-time guard prevents automatic execution of template commands embedded in synced content.
 
 ## 💡 使用示例 / Examples
 
@@ -267,3 +256,14 @@ tags: [消息]
 ---
 
 更多信息请关注《笔记同步助手》服务号。
+
+## 设置页路径控件 / Path Controls
+
+文件夹右侧的文件夹按钮可选择已有目录或输入新目录；选中后替换整个字段，目录在同步时创建。
+变量按钮把所选变量追加为一级子目录；文件名变量在光标处插入，可替换选区。下方示例使用最近一篇笔记的数据和对应日期格式，并应用实际路径的字符清洗规则。
+
+「路径设置 → 快捷设置」提供不按日期分文件夹、按平台分文件夹、消息每条单独一篇、恢复默认路径。确认前逐项显示差异，应用后可在本次设置页会话内撤销；已有文件不移动。
+
+「消息单独设置」默认关闭，在不合并或双写时可开启。文件夹、文件名、两项日期格式、笔记属性及正文模板分别留空时使用文章对应值。双写的合并副本继续使用原合并模板。同名消息按现有规则编号。
+
+Folder pickers replace the whole folder field; variable buttons append a folder segment or insert a file-name variable at the selection. Previews use a recent note and the same path sanitization as sync. Presets show a confirmation diff and support undo during the current settings session. They do not move existing files. Standalone-message settings default to off; blank fields inherit article settings, while the merged copy in dual-write mode retains its merge template.

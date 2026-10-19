@@ -401,3 +401,42 @@ VIP Status Display
 .vip-status-qr.is-hidden {
 	display: none;
 }
+
+.notehelper-path-preview { margin-top: 6px; color: var(--text-muted); overflow-wrap: anywhere; }
+.notehelper-path-preview.is-error,
+.notehelper-api-key-status[data-state="invalid"] { color: var(--text-error); }
+.notehelper-api-key-status[data-state="valid"] { color: var(--text-success); }
+.notehelper-api-key-status[data-state="format"] { color: var(--text-warning); }
+.notehelper-api-key-status { margin-top: 6px; }
+.notehelper-presets .setting-item-control { flex-wrap: wrap; }
+[data-path-key] .setting-item-control { flex-wrap: nowrap; min-width: 0; }
+[data-path-key] .setting-item-control input { min-width: 70px; width: 100%; }
+.notehelper-presets { display: block; }
+.notehelper-presets .setting-item-info { margin-bottom: 8px; }
+.notehelper-presets .setting-item-control { justify-content: flex-start; }
+
+button.notehelper-insert-variable {
+	font-size: var(--font-smallest, 12px);
+	padding: 3px 6px;
+	height: auto;
+	min-height: 24px;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+.notehelper-template-variable-row .setting-item-control {
+	flex-wrap: wrap;
+	min-width: 0;
+}
+.notehelper-template-variable-row textarea {
+	flex: 1 1 240px;
+	min-width: 0;
+	max-width: 100%;
+}
+.is-mobile button.notehelper-insert-variable {
+	font-size: var(--font-ui-small);
+	padding: 4px 10px;
+	min-height: 32px;
+}
+.notehelper-path-hint { margin-top: 4px; color: var(--text-warning); overflow-wrap: anywhere; }
+.notehelper-path-hint:empty { display: none; }
+.vip-status-container.is-pending { opacity: 0.5; transition: opacity 0.2s; }

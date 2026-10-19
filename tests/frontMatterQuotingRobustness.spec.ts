@@ -14,18 +14,19 @@
 //   脏数据            | "双引号" | '单引号' | 裸值
 //   值含 ASCII "      |   ✗整段  |   ✓      |  ✓
 //   值含 ASCII '      |   ✓      |   ✗整段  |  ✓
-//   值含 ": "         |   ✓      |   ✓      |  ✗整段
+//   值含 ": "         |   ✓      |   ✓      |  ✓(sanitize 兜底)
 //   值以 # 开头       |   ✓      |   ✓      |  △null
 //   值以 - 开头       |   ✓      |   ✓      |  ✗整段
 //
 // 结论（给用户的推荐写法）：用**双引号**。它唯一的雷是"值里含半角双引号"，而中文
-// 内容通常用全角引号“”（安全）；单引号版怕英文撇号（it's / don't，概率高得多），
-// 裸值版怕英文标题里极常见的 "Title: Subtitle"。
+// 内容通常用全角引号“”（安全）；单引号版怕英文撇号（it's / don't，概率高得多）。
+// 裸值版如今靠 sanitize 兜底能救回 ": "（含中文 key，2026-10-09 修复），但仍怕
+// 值以 - 开头（见矩阵），以及值中段「空格+#」的静默截断（见文末局限用例）。
 //
 // ⚠️ "✗整段" 是插件端的短板，不是 YAML 的必然：renderItemContent 只把模板渲染完就
 // 交给 parseYaml，没有对插值出来的**值**做 YAML 转义（sanitizeRenderedYaml 兜底只
-// 会给整个值加引号，救不了值内部本来就有的引号）。要根治得在渲染层转义值，届时请
-// 更新本矩阵而不是删掉它。
+// 会给整个值加引号，救不了值内部本来就有的引号，也够不到值以 - 开头的裸值——
+// YAML_NEEDS_QUOTING 不含 -）。要根治得在渲染层转义值，届时请更新本矩阵而不是删掉它。
 
 import { renderItemContent, DEFAULT_TEMPLATE } from '../src/settings/template'
 import { Item } from '@omnivore-app/api'
@@ -119,9 +120,9 @@ describe('前置元数据模板：引号写法 × 脏数据 鲁棒性矩阵（�
       expect: { double: 'ok', single: 'whole-block-lost', bare: 'ok' },
     },
     {
-      label: '值含「冒号+空格」→ 裸值版整段丢失',
+      label: '值含「冒号+空格」→ 裸值版靠 sanitize 兜底保住（中文 key 2026-10-09 起同样救回）',
       override: { title: '深度: 都江堰' } as Partial<Item>,
-      expect: { double: 'ok', single: 'ok', bare: 'whole-block-lost' },
+      expect: { double: 'ok', single: 'ok', bare: 'ok' },
     },
     {
       label: '值以 # 开头 → 裸值版被当注释，字段静默变 null',
@@ -158,7 +159,11 @@ describe('前置元数据模板：引号写法 × 脏数据 鲁棒性矩阵（�
     }
   })
 
-  it('用户原版模板：{{"自然语言"}} 不是变量，标签行渲染成非法 YAML → 整段丢失', () => {
+  it('用户原版模板：{{"自然语言"}} 不是变量，标签行渲染成非法 YAML → 中文 key 起被 sanitize 兜住（降级为乱串字符串而非整段丢失）', () => {
+    // 2026-07-30 工单原形态。旧行为：`标签: [,  ,,  ,]` 非法 flow seq → 首轮解析
+    // 失败 → sanitize 匹配不上中文 key → omnivore_error、字段全丢。2026-10-09
+    // 中文 key 修复后：标签行被兜底加引号 → 解析成功，字段保住，标签值退化为
+    // 一坨字符串（与上方 commaBefore 用例钉的降级语义一致）。
     const USER_TEMPLATE =
       '标题: {{title}}\n' +
       '链接: "{{{originalUrl}}}"\n' +
@@ -168,9 +173,9 @@ describe('前置元数据模板：引号写法 × 脏数据 鲁棒性矩阵（�
       '标签: [{{#labels}}, {{"结合内容总结3到5个标签"}} ,{{/labels}}]'
     const content = render(USER_TEMPLATE, mockArticle())
     const fm = frontMatterParsed(content)
-    expect(fm?.['omnivore_error']).toMatch(/error parsing/i)
-    expect(fm?.['标题']).toBeUndefined()
-    expect(fm?.['标签']).toBeUndefined()
+    expect(fm?.['omnivore_error']).toBeUndefined()
+    expect(fm?.['标题']).toBe('正常标题')
+    expect(fm?.['标签']).toBe('[,  ,,  ,]')
   })
 
   it('去掉固定首项标签时，逗号必须挪到 name 后面（否则空首项被兜底成一坨字符串）', () => {
@@ -216,5 +221,83 @@ describe('前置元数据模板：引号写法 × 脏数据 鲁棒性矩阵（�
     const fm = frontMatterParsed(content)
     expect(fm?.['omnivore_error']).toBeUndefined()
     expect(fm?.['标签']).toEqual([])
+  })
+})
+
+// 2026-10-09「天圆地方」工单：用户 7 个属性 key 全中文、值全裸写。实测回放该用户
+// omniserver 近 12 天 119 篇文章：X 44/48、头条 33/48（微头条）、微博 2/2、小红书
+// 2/2 整段丢失（omnivore_error，7 字段全没），公众号 4/4 正常 —— 因为 X/微博标题是
+// `作者: 推文内容`（ASCII 冒号+空格）、头条微头条/小红书摘要以 `@作者 发布的微头条`
+// 开头（@ 是 YAML 保留起始符），首轮 parseYaml 必炸；而 sanitizeRenderedYaml 的行
+// 正则只认 \w key，中文 key 一行都匹配不上、加不了引号 → 二次解析也炸。公众号值
+// 干净所以"大部分正常"，造成"时好时坏"的观感。
+describe('中文 key × 平台脏数据（sanitize 兜底须覆盖中文 key）', () => {
+  const USER_TEMPLATE = `原标题: {{{title}}}
+原文链接: {{{originalUrl}}}
+作者: {{{author}}}
+发行平台: {{{siteName}}}
+添加时间: {{{dateSaved}}}
+Tags标签: [笔记同步助手{{#labels}}, {{{name}}}{{/labels}}]
+前言摘要: {{{description}}}`
+
+  it('X 形态标题（`作者: 推文`）不再整段丢失，7 个字段全部落盘', () => {
+    const item = mockArticle({
+      title: 'Suu: 我发现很多大学生都已经会翻墙了',
+      siteName: 'X',
+      labels: [{ name: 'AI' }],
+    } as Partial<Item>)
+    const fm = frontMatterParsed(render(USER_TEMPLATE, item))
+    expect(fm?.['omnivore_error']).toBeUndefined()
+    expect(fm?.['原标题']).toBe('Suu: 我发现很多大学生都已经会翻墙了')
+    expect(fm?.['发行平台']).toBe('X')
+    expect(fm?.['作者']).toBe('作者')
+    expect(fm?.['原文链接']).toBe('https://mp.weixin.qq.com/s/abc')
+    expect(fm?.['前言摘要']).toBe('一句话描述。')
+    expect('添加时间' in (fm ?? {})).toBe(true)
+    // 降级（既有行为，非本修复目标）：sanitize 给「违规行」之外的含特殊字符行
+    // 也加了引号 → flow seq 兜成字符串而非数组（与 ASCII key 行为一致）。
+    expect(fm?.['Tags标签']).toBe('[笔记同步助手, AI]')
+  })
+
+  it('头条微头条形态摘要（`@作者 发布的微头条`）不再整段丢失', () => {
+    const item = mockArticle({
+      title: 'AI巨风：做自媒体最累的',   // 全角冒号本身安全，不触发 sanitize
+      siteName: '头条',
+      author: undefined,                // 头条 author 常为 NULL → 插件兜 'unknown'
+      description: '@AI巨风 发布的微头条 146人阅读',
+      labels: [],
+    } as Partial<Item>)
+    const fm = frontMatterParsed(render(USER_TEMPLATE, item))
+    expect(fm?.['omnivore_error']).toBeUndefined()
+    expect(fm?.['原标题']).toBe('AI巨风：做自媒体最累的')
+    expect(fm?.['前言摘要']).toBe('@AI巨风 发布的微头条 146人阅读')
+    expect(fm?.['作者']).toBe('unknown')
+    expect(fm?.['Tags标签']).toBe('[笔记同步助手]')
+  })
+
+  it('局限（固化现状）：值中段「空格+#」首轮解析就成功、值被当注释静默截断，sanitize 不介入', () => {
+    // AI整理-今日头条的摘要形态（v2a 正文带 #话题）。`前言摘要: xxx #话题` 在 YAML
+    // 里是合法的（# 起注释）→ 首轮 parseYaml 成功 → 兜底永不触发 → 值在 # 前被无声
+    // 截断。这是「sanitize 只在解析失败时触发」的固有盲区，不是本次中文 key 修复
+    // 的范围；要根治需在渲染层统一给值加引号/转义。
+    const item = mockArticle({
+      description: '用豆包Agent做了一个Skill，每天帮我节省半小时 #豆包工作流',
+    } as Partial<Item>)
+    const content = render(USER_TEMPLATE, item)
+    expect(frontMatterRaw(content)).not.toMatch(/omnivore_error/)
+    const fm = frontMatterParsed(content)
+    expect(fm?.['前言摘要']).toBe('用豆包Agent做了一个Skill，每天帮我节省半小时')
+  })
+
+  it('块标量头不受兜底牵连：另一字段触发 sanitize 时 `摘要块: |` 原样保留（codex 二审 P2）', () => {
+    const tpl = `原标题: {{{title}}}
+摘要块: |
+  静态多行正文`
+    const fm = frontMatterParsed(render(tpl, mockArticle({
+      title: 'Suu: 我发现很多大学生',
+    } as Partial<Item>)))
+    expect(fm?.['omnivore_error']).toBeUndefined()
+    expect(fm?.['原标题']).toBe('Suu: 我发现很多大学生')
+    expect(fm?.['摘要块']).toBe('静态多行正文\n')
   })
 })

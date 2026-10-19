@@ -7,6 +7,8 @@ import { DEFAULT_SETTINGS, ImageMode } from '../src/settings'
 import { getItems, deleteArticleById } from '../src/api'
 import { TFile, TFolder } from 'obsidian'
 import { logError } from '../src/logger'
+import { PendingLocalizeStore } from '../src/imageLocalizer/pendingQueueStore'
+import { AttachmentLocalizer } from '../src/attachmentLocalizer/attachmentLocalizer'
 const flush = async () => { for (let i = 0; i < 100; i++) await Promise.resolve() }
 function harness() {
   const plugin = Object.create(OmnivorePlugin.prototype) as any
@@ -24,6 +26,109 @@ function harness() {
 }
 beforeEach(() => { jest.clearAllMocks(); jest.useFakeTimers(); (global as any).window = global })
 afterEach(() => { jest.useRealTimers() })
+test.each([true, false])('debug=%s: background localization preserves diagnostic no-delete protection', async debugMode => {
+  const { plugin, release } = harness()
+  plugin.settings.debugMode = debugMode
+  plugin.settings.burnAfterReading = true
+  const record = { id: 'history', updatedAt: 'v1', filePath: 'saved.md', originalImageUrls: [], originalAttachmentUrls: [], reason: 'pending', lastTriedAt: '' }
+  plugin.settings.pendingBurnDeletes = [record]
+  plugin.app.vault.getAbstractFileByPath = () => Object.assign(new TFile(), { path: 'saved.md' })
+  plugin.app.vault.read = async () => 'localized content'
+  plugin.imageLocalizer.subscribeProgress = () => () => {}
+  plugin.attachmentLocalizer.subscribeProgress = () => () => {}
+  ;(deleteArticleById as jest.Mock).mockResolvedValue(true)
+  await plugin.fetchOmnivore(true)
+  release()
+  await flush()
+  await plugin.backgroundLocalizationPromise
+  expect(deleteArticleById).toHaveBeenCalledTimes(debugMode ? 0 : 1)
+  expect(plugin.settings.pendingBurnDeletes).toEqual(debugMode ? [record] : [])
+})
+
+async function initializedLocalizerHarness(lane: 'image' | 'attachment', tasks: unknown[] = []) {
+  const { plugin, release } = harness()
+  const renameCallbacks: Array<(file: TFile | TFolder, oldPath: string) => void> = []
+  const retries: Array<() => Promise<void>> = []
+  const snapshots = new Map<string, unknown>([['pending-attachment-queue.json', { tasks }]])
+  plugin.manifest = {}
+  plugin.createSidecarJsonPersister = (name: string) => ({
+    load: async () => snapshots.get(name) ?? {},
+    save: async (snapshot: unknown) => { snapshots.set(name, snapshot) },
+  })
+  plugin.watchLocalizationRetry = (_store: unknown, run: () => Promise<void>) => { retries.push(run) }
+  plugin.registerEvent = jest.fn()
+  plugin.app.workspace = { onLayoutReady: jest.fn() }
+  plugin.app.vault.on = (_event: string, callback: (file: TFile | TFolder, oldPath: string) => void) => { renameCallbacks.push(callback); return {} }
+  if (lane === 'image') {
+    plugin.imageLocalizer = null
+    await plugin.initializeImageLocalizer()
+  } else {
+    plugin.attachmentLocalizer = null
+    await plugin.initializeAttachmentLocalizer()
+  }
+  expect(retries).toHaveLength(1)
+  return { plugin, release, retries, renameCallbacks, snapshots }
+}
+
+test.each(['image', 'attachment'] as const)('%s retry cannot authorize cloud deletion in diagnostic mode, ordinary background fetch still can', async lane => {
+  const { plugin, release, retries } = await initializedLocalizerHarness(lane)
+  plugin.settings.debugMode = true
+  plugin.settings.burnAfterReading = true
+  const record = { id: 'history', updatedAt: 'v1', filePath: 'saved.md', originalImageUrls: [], originalAttachmentUrls: [], reason: 'pending', lastTriedAt: '' }
+  plugin.settings.pendingBurnDeletes = [record]
+  plugin.app.vault.getAbstractFileByPath = () => Object.assign(new TFile(), { path: 'saved.md' })
+  plugin.app.vault.read = async () => 'localized content'
+  ;(deleteArticleById as jest.Mock).mockResolvedValue(true)
+  release()
+  await plugin.fetchOmnivore(true)
+  await plugin.backgroundLocalizationPromise
+  await retries[0]()
+  await plugin.backgroundLocalizationPromise
+  expect(deleteArticleById).not.toHaveBeenCalled()
+  expect(plugin.settings.pendingBurnDeletes).toEqual([record])
+  await plugin.fetchOmnivore(false)
+  await plugin.backgroundLocalizationPromise
+  expect(deleteArticleById).toHaveBeenCalledTimes(1)
+  expect(plugin.settings.pendingBurnDeletes).toEqual([])
+})
+
+test('parent folder rename preserves nested attachment pending records across restart without touching sibling prefixes', async () => {
+  const tasks = ['old/a.md', 'old/nested/b.md', 'old-other/c.md'].map(filePath => ({
+    filePath, retryCount: 3, createdAt: 1, nextAttemptAt: 42,
+    missingAttachments: { 'https://files.example/a': { firstNotFoundAt: 7, notFoundRounds: 2 } },
+  }))
+  const { plugin, renameCallbacks, snapshots } = await initializedLocalizerHarness('attachment', tasks)
+  const store = plugin.attachmentLocalizer.getPendingStore() as PendingLocalizeStore
+  const folder = Object.assign(new TFolder(), { path: 'new' })
+  for (const callback of renameCallbacks) callback(folder, 'old')
+  expect(store.get('old/a.md')).toBeUndefined()
+  expect(store.get('old/nested/b.md')).toBeUndefined()
+  expect(store.get('new/a.md')).toMatchObject({ retryCount: 3, nextAttemptAt: 42, missingAttachments: tasks[0].missingAttachments })
+  expect(store.get('new/nested/b.md')).toBeDefined()
+  expect(store.get('old-other/c.md')).toBeDefined()
+  await store.flush()
+  const restartedStore = new PendingLocalizeStore({ load: async () => snapshots.get('pending-attachment-queue.json'), save: async () => {} })
+  await restartedStore.load()
+  const files = new Map(restartedStore.list().map(record => [record.filePath, Object.assign(new TFile(), { path: record.filePath })]))
+  const restarted = new AttachmentLocalizer(plugin.app, { attachmentFolder: 'attachments', folderDateFormat: 'yyyy-MM-dd', maxRetries: 0, retryDelay: 0 }, restartedStore)
+  expect(restarted.resumePending(path => files.get(path) ?? null)).toBe(3)
+  expect(restartedStore.get('new/a.md')).toBeDefined()
+  expect(restarted.getQueueStats().pending).toBe(3)
+})
+
+test('unload flushes pending attachment state after disposing the worker', () => {
+  const { plugin } = harness()
+  const flushAttachments = jest.fn(async () => {})
+  const disposeAttachments = jest.fn()
+  plugin.pendingLocalizationFiles = new Set()
+  plugin.imageLocalizer = null
+  plugin.attachmentLocalizer = { dispose: disposeAttachments, getPendingStore: () => ({ flush: flushAttachments }) }
+  plugin.onunload()
+  expect(disposeAttachments).toHaveBeenCalledTimes(1)
+  expect(flushAttachments).toHaveBeenCalledTimes(1)
+  expect(disposeAttachments.mock.invocationCallOrder[0]).toBeLessThan(flushAttachments.mock.invocationCallOrder[0])
+})
+
 test('R8: sync finishes and accepts a second fetch while localization is still in flight', async () => {
   const { plugin, release } = harness()
   let finished = false

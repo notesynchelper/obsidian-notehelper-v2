@@ -38,7 +38,7 @@ import {
   LocalizationResult,
 } from '../common/localizationResult'
 import { scanImageSyntax } from './imageSyntax'
-import { unhideVaultPath } from '../util'
+import { replaceIllegalCharsFolder } from '../util'
 
 /**
  * 普通 Markdown 链接匹配正则（排除图片链接）
@@ -752,7 +752,7 @@ export class ImageLocalizer {
       { pathSafe: true, isMessage: meta?.isMessage },
     )
 
-    return unhideVaultPath(normalizePath(folderPath))
+    return replaceIllegalCharsFolder(normalizePath(folderPath))
   }
 
   /**

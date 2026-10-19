@@ -14,6 +14,7 @@ import {
   TIMEOUTS,
   FALLBACK_BUDGET_MS,
   getArticleCount,
+  verifyApiKey,
   clearAllArticles,
 } from '../src/api'
 import { __resetForTests } from '../src/endpointSelector'
@@ -289,6 +290,16 @@ describe('私有 endpoint 鉴权头向后兼容', () => {
     )
     await clearAllArticles('https://my-private.example.com/api/graphql', 'private-key')
     expect(capturedHeaders['Authorization']).toBe('Bearer private-key')
+  })
+})
+
+describe('key verification distinguishes authorization errors from network failures', () => {
+  it.each([[200, 'valid'], [401, 'invalid'], [503, 'network']] as const)('%s => %s', async (status, expected) => {
+    const obsidian = jest.requireMock('obsidian') as { requestUrl: jest.Mock }
+    obsidian.requestUrl.mockImplementation(async () => ({ status, json: { count: 7 }, text: '', arrayBuffer: new ArrayBuffer(0), headers: {} }))
+    const result = await verifyApiKey('custom-key')
+    expect(result.status).toBe(expected)
+    if (result.status === 'valid') expect(result.count).toBe(7)
   })
 })
 

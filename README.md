@@ -51,6 +51,8 @@ Legacy note: the bundle includes the `@omnivore-app/api` client library (this pl
 3. Click the ribbon icon (or run the `Sync` command). Synced notes land in the folder configured in settings (default `Synced/`).
 4. Optional: customize templates (front matter, file naming, merge modes), image/attachment localization, diary links, and sync schedule in the settings page.
 
+Folder and file-name settings provide folder pickers, template-variable insertion and path previews. Quick presets show the proposed changes before applying them and can be undone during the current settings session; existing files are not moved. Email notes and standalone messages can use their own folders, names, front matter and body templates. Each blank profile field inherits the corresponding article setting. In dual-write mode, the merged message copy continues to use the merge settings.
+
 When localization is enabled, notes are saved first while images and attachments continue downloading. The sync completion notice identifies pending background work. Temporary download failures keep the remote links and retry with backoff while Obsidian is running; returning to the foreground resumes due retries. The note context menu offers an immediate localization retry. Previously mislinked same-name attachments cannot be detected or repaired automatically. Mobile attachment localization requires Obsidian 1.12.3 or later and a download host that permits browser access. Files are written in chunks to limit memory use; unsupported hosts or versions retain the remote link for retry.
 
 ### Privacy & data location
@@ -111,6 +113,8 @@ When localization is enabled, notes are saved first while images and attachments
 2. 关注微信服务号「笔记同步助手」，获取 API 密钥，填入插件设置；
 3. 点击侧边栏图标（或运行 `Sync` 命令），同步的笔记落在设置中配置的文件夹（默认 `Synced/`）；
 4. 可选：在设置页自定义模板（前置元数据、文件命名、合并模式）、图片/附件本地化、日记双链与同步频率。
+
+文件夹与文件名设置提供目录选择、模板变量插入和路径示例。快捷设置会先展示变更，应用后可在本次设置页会话内撤销，已有文件不移动。邮件笔记与单条消息可以分别设置文件夹、文件名、前置元数据和正文模板，每个留空字段使用对应的文章设置；双写时的合并副本继续使用合并设置。
 
 开启本地化后，笔记先保存，图片和附件继续下载；同步完成提示会注明仍有后台处理。下载暂时失败时保留远程链接，Obsidian 运行期间按退避间隔重试，回到前台继续到期任务。也可通过笔记右键菜单立即重新本地化。历史版本已发生的同名附件错链无法自动识别或修复。 移动端附件本地化需要 Obsidian 1.12.3 或更高版本，且下载来源允许浏览器跨域访问。附件分块写入以控制内存；宿主版本或来源不支持时保留远程链接及重试待办。
 

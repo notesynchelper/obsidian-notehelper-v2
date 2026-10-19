@@ -181,8 +181,8 @@ describe('§2 localizer 端到端模板变量支持矩阵', () => {
   const cases: Array<[string, string, string]> = [
     ['siteName',       'p/{{{siteName}}}',       'p/example.com'],
     // pathSafe 围栏：变量值里的 URL `/` 折成 `-`，不再炸成多级目录（只有模板字面 `/` 才分层）
-    ['originalUrl',    'p/{{{originalUrl}}}',    'p/https:-example.com-post-1'],
-    ['omnivoreUrl',    'p/{{{omnivoreUrl}}}',    'p/https:-omnivore.app-me-post-1'],
+    ['originalUrl',    'p/{{{originalUrl}}}',    'p/https--example.com-post-1'],
+    ['omnivoreUrl',    'p/{{{omnivoreUrl}}}',    'p/https--omnivore.app-me-post-1'],
     ['author',         'p/{{{author}}}',         'p/Alice'],
     ['id',             'p/{{{id}}}',             'p/note-id-abc'],
     ['datePublished',  'p/{{{datePublished}}}',  'p/2026-05-20'],

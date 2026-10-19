@@ -153,6 +153,8 @@ export class DiaryLinkProcessor {
 		if (!this.settings.enableDiaryLinks) return
 
 		const isMessage = isWeChatMessage(item)
+		const standaloneMessage = isMessage && this.settings.messageSeparateEnabled &&
+			typeof (item as Item & { rawTitle?: string }).rawTitle === 'string'
 
 		// 根据链接类型过滤
 		if (this.settings.diaryLinkType === DiaryLinkType.MESSAGES && !isMessage) return
@@ -176,8 +178,8 @@ export class DiaryLinkProcessor {
 			item,
 			targetFile: targetFileName,
 			targetPath,
-			displayTitle: this.extractDisplayTitle(item),
-			anchorHeading: isMessage ? (anchorHeading || heading) : undefined,
+			displayTitle: standaloneMessage ? item.title : this.extractDisplayTitle(item),
+			anchorHeading: isMessage && !standaloneMessage ? (anchorHeading || heading) : undefined,
 			heading,
 			savedDateISO: item.savedAt,
 			isMessage
@@ -415,7 +417,8 @@ export class DiaryLinkProcessor {
 	private groupByDate(): Map<string, DiaryLinkItem[]> {
 		const groups = new Map<string, DiaryLinkItem[]>()
 		for (const link of this.links) {
-			const dateKey = link.savedDateISO.slice(0, 10)
+			const dateKey = this.settings.diaryFolder.includes('{{')
+				? this.resolver.diaryPath(link.savedDateISO, link.item) : link.savedDateISO.slice(0, 10)
 			const existing = groups.get(dateKey) || []
 			existing.push(link)
 			groups.set(dateKey, existing)
@@ -437,7 +440,7 @@ export class DiaryLinkProcessor {
 		selfLinks: number
 	}> {
 		const dateISO = links[0].savedDateISO
-		const resolveResult = await this.resolver.resolve(dateISO)
+		const resolveResult = await this.resolver.resolve(dateISO, links[0].item)
 
 		if (!resolveResult.file) {
 			return { success: false, reason: resolveResult.reason || 'fileNotFound', selfLinks: 0 }

@@ -593,3 +593,14 @@ describe('备份恢复：日记链接模板迁移 + 聊天记录时间样式保�
     expect(merged.chatRecordTimestampTemplate).toBe('{{{timeShort}}}')
   })
 })
+
+
+it('stale backups preserve newer independent message and email profiles', () => {
+  const manager = new ConfigMigrationManager(createMockApp(), createMockPlugin())
+  const values = {messageSeparateEnabled:true,messageSeparateFolder:'CurrentMessages',messageSeparateFolderDateFormat:'yyyy-MM',
+    messageSeparateFilename:'M-{{{title}}}',messageSeparateFilenameDateFormat:'yyyyMMdd',
+    messageSeparateFrontMatterTemplate:'kind: message',messageSeparateTemplate:'{{{rawTitle}}}',
+    emailSettingsEnabled:true,emailFolder:'CurrentEmail',emailTemplate:'EMAIL {{{content}}}'}
+  const merged = manager.smartMergeSettings({...DEFAULT_SETTINGS,...values}, {...DEFAULT_SETTINGS}, '3.2.15')
+  expect(merged).toMatchObject(values)
+})

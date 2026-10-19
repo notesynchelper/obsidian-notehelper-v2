@@ -4,11 +4,16 @@ import {
   Notice,
   PluginSettingTab,
   Setting,
+  TextComponent,
   requestUrl,
 } from 'obsidian'
 
 import OmnivorePlugin from './main'
-import { FolderSuggest } from './settings/file-suggest'
+import { addPathControls } from './settings/path-controls'
+import { addTemplateVariableButton } from './settings/variable-controls'
+import { normalizeApiKey, checkApiKeyFormat } from './settings/apiKeyValidation'
+import { PRESETS, PresetId, applyPreset } from './settings/presets'
+import { standaloneMessageItem } from './settings/template'
 import {
   DEFAULT_SETTINGS,
   FRONT_MATTER_VARIABLES,
@@ -22,7 +27,7 @@ import {
   PluginLanguage,
 } from './settings'
 import { formatDate } from './util'
-import { validateTemplate, validateDateFormat } from './settings/validation'
+import { validateTemplate, validateDateFormat, flushValidationNotice } from './settings/validation'
 import { analyzeTemplaterTags } from './sync/templaterRelay'
 import { normalizeRetiredQuerySettings } from './settings/queryNormalize'
 import { validateFrontMatterTemplate } from './settings/template'
@@ -33,11 +38,11 @@ import {
   resolveDiaryLinkTemplate,
 } from './sync/diaryLinkTemplate'
 import type { Item } from '@omnivore-app/api'
-import { getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh } from './api'
+import { verifyApiKey, ApiKeyVerification, getArticleCount, clearAllArticles, fetchVipStatus, fetchVipStatusFresh } from './api'
 import { VIP_QR_DATA_URI } from './assets/vipQrImage'
 import { log, logError, Logger } from './logger'
 import { MARKET_VERSION_CHECK_URL } from './updateReminder'
-import { t } from './i18n'
+import { t, tf, type TKey } from './i18n'
 import {
   clampImageDownloadRetries,
   MAX_IMAGE_DOWNLOAD_RETRIES,
@@ -74,9 +79,107 @@ export class OmnivoreSettingTab extends PluginSettingTab {
   // 防「页面加载的 /user-config（慢、被缓存的旧值）迟到后盖掉刚点刷新的实时值」竞态。
   private vipStatusReqSeq = 0
 
+  private keyTimer?: number
+  private keySequence = 0
+  private keyCache = new Map<string, ApiKeyVerification>()
+  private pathDisposers: (() => void)[] = []
+  private undoNotices: Notice[] = []
+  private presetsEl: HTMLElement | null = null
+  private pathValue(text: TextComponent, key: keyof import('./settings').OmnivoreSettings): string {
+    const s = this.plugin.settings
+    if (!this.plugin.latestPathPreviewItem) {
+      const recent = this.app.vault.getMarkdownFiles().filter(file => this.app.metadataCache.getFileCache(file)?.frontmatter?.id)
+        .sort((a,b) => b.stat.mtime - a.stat.mtime)[0]
+      if (recent) {
+        const fm: Record<string, unknown> = this.app.metadataCache.getFileCache(recent)?.frontmatter || {}
+        const stringValue = (value: unknown): string => typeof value === 'string' ? value : ''
+        const savedValue = fm.saved || fm.date_saved || recent.stat.ctime
+        const saved = new Date(typeof savedValue === 'string' || typeof savedValue === 'number' ? savedValue : recent.stat.ctime)
+        this.plugin.latestPathPreviewItem = { title: stringValue(fm.rawTitle) || stringValue(fm.title) || recent.basename,
+          savedAt: Number.isNaN(saved.getTime()) ? new Date(recent.stat.ctime).toISOString() : saved.toISOString(),
+          siteName: stringValue(fm.source) || stringValue(fm.site_name), author: stringValue(fm.author), url: stringValue(fm.url) } as Item
+      }
+    }
+    const filename = /[Ff]ilename|singleFileName/.test(key)
+    const dateKey = key === 'singleFileName' ? 'singleFileDateFormat'
+      : key.startsWith('email') ? (filename ? 'emailFilenameDateFormat' : 'emailFolderDateFormat')
+      : key.startsWith('messageSeparate') ? (filename ? 'messageSeparateFilenameDateFormat' : 'messageSeparateFolderDateFormat')
+      : key === 'diaryFolder' ? 'diaryDateFormat' : filename ? 'filenameDateFormat' : 'folderDateFormat'
+    // 没有真实笔记可参照时的示例：消息类字段用消息标题，其余用文章标题
+    const messageField = key === 'messageFolder' || key === 'singleFileName' || key.startsWith('messageSeparate')
+    const sample = () => ({ title: messageField ? '同步助手_20260929_示例笔记_文本' : t('pathControls.sampleArticleTitle'),
+      savedAt: new Date().toISOString(), siteName: t('pathControls.sampleSiteName'), author: t('pathControls.sampleAuthor'),
+      url: 'https://example.com' } as Item)
+    this.pathDisposers.push(addPathControls(this.app, text, { key, kind: filename ? 'filename' : 'folder',
+      dateFormat: () => s[dateKey] || s[filename ? 'filenameDateFormat' : 'folderDateFormat'],
+      fallback: () => key === 'messageFolder' || key === 'emailFolder' || key === 'messageSeparateFolder' ? s.folder
+        : key === 'emailFilename' || key === 'messageSeparateFilename' ? s.filename : '',
+      sample: () => {
+        const item = sample()
+        return key.startsWith('messageSeparate') ? standaloneMessageItem(item) : item
+      },
+      item: () => {
+        const item = this.plugin.latestPathPreviewItem || sample()
+        if (key === 'messageFolder' || key === 'singleFileName') {
+          const date = /^同步助手_(\d{4})(\d{2})(\d{2})_/.exec(item.title)
+          if (date) return { ...item, savedAt: `${date[1]}-${date[2]}-${date[3]}T00:00:00.000Z` }
+        }
+        return key.startsWith('messageSeparate') ? standaloneMessageItem(item) : item
+      },
+    }))
+    return s[key] as string
+  }
+  private queueKeyValidation(value: string, status: HTMLElement): void {
+    window.clearTimeout(this.keyTimer)
+    this.vipStatusReqSeq++
+    const sequence = ++this.keySequence
+    // 验证中保留旧的会员信息（灰显），只有确认无效才清掉
+    this.vipStatusContainer?.toggleClass('is-pending', !!value)
+    if (!value.trim()) {
+      this.clearVipStatus()
+      this.vipStatusContainer?.addClass('is-hidden')
+      status.setText(t('apiKeyStatus.empty'))
+      status.dataset.state = 'empty'
+      return
+    }
+    const hint = checkApiKeyFormat(value)
+    status.setText(hint ? t(`apiKeyStatus.${hint}`) : t('apiKeyStatus.pending'))
+    status.dataset.state = hint ? 'format' : 'pending'
+    const verify = async () => {
+      const cacheKey = this.plugin.settings.endpoint + ':' + value
+      const result = this.keyCache.get(cacheKey) || await verifyApiKey(value, this.plugin.settings.endpoint)
+      if (sequence !== this.keySequence || !status.isConnected) return
+      status.dataset.state = result.status
+      status.setText(result.status === 'valid' ? tf('apiKeyStatus.valid', { count: result.count })
+        : result.status === 'invalid' ? t('apiKeyStatus.invalid')
+        : tf('apiKeyStatus.network', { time: new Date().toLocaleTimeString('en-GB', { hour12: false }) }))
+      if (result.status !== 'network') {
+        this.keyCache.set(cacheKey, result)
+        this.vipStatusContainer?.removeClass('is-pending')
+      }
+      if (result.status === 'valid') void this.updateVipStatus()
+      if (result.status === 'invalid') this.clearVipStatus()
+      if (result.status === 'network') this.keyTimer = window.setTimeout(() => { void verify() }, 10000)
+    }
+    this.keyTimer = window.setTimeout(() => { void verify() }, 600)
+  }
+
+  private clearVipStatus(): void {
+    const container = this.vipStatusContainer
+    if (!container) return
+    this.vipStatusReqSeq++ // 作废还在路上的会员状态请求，免得旧结果盖回来
+    container.querySelector('.vip-status-info')?.setText(t('apiKeyStatus.vipPlaceholder'))
+    container.querySelector('.vip-status-qr-label')?.setText('')
+    container.querySelector('.vip-status-qr')?.addClass('is-hidden')
+  }
+
   constructor(app: App, plugin: OmnivorePlugin) {
     super(app, plugin)
     this.plugin = plugin
+    // 输入过程中不弹校验提示，离开输入框时再提示
+    this.containerEl.addEventListener('focusout', event => flushValidationNotice(event.target))
+    // 手动改路径后，快捷设置按钮的显隐随之更新（onChange 已同步写入 settings）
+    for (const type of ['input', 'change']) this.containerEl.addEventListener(type, () => this.renderPresets())
   }
 
   /**
@@ -109,6 +212,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
     // 如果没有密钥，隐藏状态容器
     if (!apiKey || apiKey.trim() === '') {
+      this.clearVipStatus()
       this.vipStatusContainer.addClass('is-hidden')
       return
     }
@@ -231,6 +335,76 @@ export class OmnivoreSettingTab extends PluginSettingTab {
   }
 
 
+  // 快捷设置：已是目标状态的按钮不显示；确认框只列当前看得到的字段（isVisibleSetting）
+  private renderPresets(): void {
+    const host = this.presetsEl
+    if (!host?.isConnected) return
+    const s = this.plugin.settings
+    const available = PRESETS.filter(preset => Object.keys(applyPreset(preset.id, s)).length)
+    const shown = Array.from(host.querySelectorAll<HTMLElement>('[data-preset]')).map(el => el.dataset.preset)
+    if (shown.join() === available.map(preset => preset.id).join()) return
+    host.empty()
+    if (!available.length) return
+    const shortcuts = new Setting(host).setName(t('presets.title'))
+    shortcuts.settingEl.addClass('notehelper-presets')
+    const presetNames: Record<PresetId, TKey> = {
+      'no-date': 'presets.noDate', platform: 'presets.platform', separate: 'presets.separate', defaults: 'presets.defaults',
+    }
+    const fieldNames: Record<string, TKey> = {
+      folder: 'settings.sync.articleFolder.name', attachmentFolder: 'settings.sync.attachmentFolder.name',
+      filename: 'settings.sync.articleFilename.name', folderDateFormat: 'settings.sync.articleFolderDateFormat.name',
+      filenameDateFormat: 'settings.sync.articleFilenameDateFormat.name',
+      messageFolder: 'settings.sync.messageFolder.name', singleFileName: 'settings.sync.messageFileName.name',
+      singleFileDateFormat: 'settings.sync.messageFileDateFormat.name',
+      imageAttachmentFolder: 'settings.image.storageFolder.name',
+      emailFolder: 'emailSettings.folder', emailFolderDateFormat: 'emailSettings.folderDateFormat',
+      emailFilename: 'emailSettings.filename', emailFilenameDateFormat: 'emailSettings.filenameDateFormat',
+      messageSeparateFolder: 'messageSeparate.folder', messageSeparateFolderDateFormat: 'messageSeparate.folderDateFormat',
+      messageSeparateFilename: 'messageSeparate.filename', messageSeparateFilenameDateFormat: 'messageSeparate.filenameDateFormat',
+      mergeMode: 'settings.sync.mergeMode.name', messageSeparateEnabled: 'messageSeparate.enabled',
+    }
+    const mergeModeNames: Record<MergeMode, TKey> = {
+      [MergeMode.NONE]: 'settings.sync.mergeMode.optionNone',
+      [MergeMode.MESSAGES]: 'settings.sync.mergeMode.optionMessages',
+      [MergeMode.DUAL]: 'settings.sync.mergeMode.optionDual',
+      [MergeMode.ALL]: 'settings.sync.mergeMode.optionAll',
+    }
+    const show = (key: string, value: unknown) => typeof value === 'boolean' ? t(value ? 'presets.on' : 'presets.off')
+      : key === 'mergeMode' ? t(mergeModeNames[value as MergeMode])
+      : typeof value === 'string' || typeof value === 'number' ? String(value || t('presets.empty')) : t('presets.empty')
+    for (const preset of available) {
+      shortcuts.addButton(button => {
+        button.setButtonText(t(presetNames[preset.id]))
+          .onClick(() => {
+            const changes = applyPreset(preset.id, this.plugin.settings)
+            const before = Object.fromEntries(Object.keys(changes).map(key => [key, this.plugin.settings[key as keyof typeof this.plugin.settings]]))
+            const lines = Object.entries(changes).map(([key, value]) =>
+              tf('presets.change', { name: fieldNames[key] ? t(fieldNames[key]) : key, from: show(key, before[key]), to: show(key, value) }))
+            if (before.mergeMode === MergeMode.ALL && changes.mergeMode === MergeMode.NONE) lines.push(t('presets.articlesUnmerged'))
+            new ConfirmModal(this.app, t(presetNames[preset.id]), lines.join('\n') + '\n\n' + t('presets.scope'), async () => {
+              Object.assign(this.plugin.settings, changes)
+              await this.plugin.saveSettings(true)
+              // 同一时间只保留最近一次的撤销
+              this.undoNotices.forEach(n => n.hide())
+              this.undoNotices = []
+              this.display()
+              const fragment = createFragment(() => {})
+              fragment.appendText(t('presets.applied'))
+              const undo = fragment.createEl('a', { text: t('presets.undo'), cls: 'notehelper-preset-undo' })
+              const notice = new Notice(fragment, 0)
+              this.undoNotices.push(notice)
+              undo.onclick = () => { void (async () => {
+                Object.assign(this.plugin.settings, before)
+                await this.plugin.saveSettings(true)
+                notice.hide(); this.display()
+              })() }
+            }).open()
+          })
+        button.buttonEl.dataset.preset = preset.id
+      })
+    }
+  }
+
   // —— 设置页分区折叠（Phase 1 IA 重排）——
   // 同一次设置会话内，展开状态跨 display() 重渲染保留（改一个下拉不再把
   // 所有分区弹回默认）；关闭设置页后重置，保证「危险区默认收起」不跨会话失效。
@@ -248,12 +422,21 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     'path-article': false,
     'path-message': false,
     'path-template': false,
+    'path-email': false,
   }
   private sectionOpen: Record<string, boolean> = {
     ...OmnivoreSettingTab.DEFAULT_SECTION_OPEN,
   }
 
   hide(): void {
+    flushValidationNotice()
+    this.pathDisposers.forEach(dispose => dispose())
+    this.pathDisposers = []
+    window.clearTimeout(this.keyTimer)
+    this.keySequence++
+    this.keyCache.clear()
+    this.undoNotices.forEach(n => n.hide())
+    this.undoNotices = []
     this.sectionOpen = { ...OmnivoreSettingTab.DEFAULT_SECTION_OPEN }
     super.hide()
   }
@@ -310,6 +493,8 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       containerEl
     const prevScrollTop = scroller.scrollTop
 
+    this.pathDisposers.forEach(dispose => dispose())
+    this.pathDisposers = []
     containerEl.empty()
 
     // 🚀 延迟执行配置迁移（不阻塞页面显示）
@@ -318,20 +503,25 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     }, 500)
 
     // —— 顶部固定：密钥（「不配置就无法使用」的第一项，不进任何折叠区）——
-    new Setting(containerEl)
-      .setName(t('settings.apiKey.name'))
-      .setDesc(t('settings.apiKey.desc'))
-      .addText((text) =>
-        text
-          .setPlaceholder(t('settings.apiKey.placeholder'))
-          .setValue(this.plugin.settings.apiKey)
-          .onChange(async (value) => {
-            this.plugin.settings.apiKey = value
-            await this.plugin.saveSettings(true)
-            // 密钥更新后查询VIP状态
-            await this.updateVipStatus()
-          }),
-      )
+    const apiRow = new Setting(containerEl)
+      .setName(t('settings.apiKey.name')).setDesc(t('settings.apiKey.desc'))
+    if (normalizeApiKey(this.plugin.settings.apiKey) !== this.plugin.settings.apiKey) {
+      this.plugin.settings.apiKey = normalizeApiKey(this.plugin.settings.apiKey)
+      void this.plugin.saveSettings(true)
+    }
+    const keyStatus = apiRow.descEl.createDiv({ cls: 'notehelper-api-key-status' })
+    apiRow.addText(text => {
+      text.setPlaceholder(t('settings.apiKey.placeholder')).setValue(normalizeApiKey(this.plugin.settings.apiKey))
+        .onChange(async value => {
+          const clean = normalizeApiKey(value)
+          if (clean !== value) { text.setValue(clean); text.inputEl.setSelectionRange(clean.length, clean.length) }
+          this.plugin.settings.apiKey = clean
+          this.queueKeyValidation(clean, keyStatus)
+          await this.plugin.saveSettings(true)
+        })
+      text.inputEl.dataset.keyInput = 'true'
+      this.queueKeyValidation(text.getValue(), keyStatus)
+    })
 
     // ============ 1. VIP中心（默认展开） ============
     const vipBody = this.createSection(
@@ -348,7 +538,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
     // 会员状态展示区域
     this.vipStatusContainer = vipBody.createDiv({
-      cls: 'vip-status-container',
+      cls: 'vip-status-container is-hidden',
     })
 
     // 左侧：状态信息容器
@@ -397,7 +587,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     })
 
     // 页面加载时查询VIP状态
-    void this.updateVipStatus()
+    // Membership is fetched after successful key verification.
 
     // 帮助与资源：教程 / 模拟器 / 云空间管理入口集中于此。
     new Setting(vipBody)
@@ -792,6 +982,9 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       t('settings.section.path.sub'),
     )
 
+    this.presetsEl = pathBody.createDiv()
+    this.renderPresets()
+
     // ▸ 文章设置（二级折叠，默认收起）
     const articleBody = this.createSection(
       pathBody,
@@ -805,12 +998,11 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setName(t('settings.sync.articleFolder.name'))
       .setDesc(t('settings.sync.articleFolder.desc'))
       .addText((text) => {
-        new FolderSuggest(this.app, text.inputEl)
         text
           .setPlaceholder(t('settings.sync.articleFolder.placeholder'))
-          .setValue(this.plugin.settings.folder)
+          .setValue(this.pathValue(text, 'folder'))
           .onChange(async (value) => {
-            if (!validateTemplate(value, '文章文件夹')) return
+            if (!validateTemplate(value, t('settings.sync.articleFolder.name'))) return
             this.plugin.settings.folder = value
             await this.plugin.saveSettings(true)
           })
@@ -824,7 +1016,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           .setPlaceholder(t('settings.sync.articleFolderDateFormat.placeholder'))
           .setValue(this.plugin.settings.folderDateFormat)
           .onChange(async (value) => {
-            if (!validateDateFormat(value, '文章文件夹日期格式')) return
+            if (!validateDateFormat(value, t('settings.sync.articleFolderDateFormat.name'))) return
             this.plugin.settings.folderDateFormat = value
             await this.plugin.saveSettings(true)
           }),
@@ -834,12 +1026,11 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .setName(t('settings.sync.attachmentFolder.name'))
       .setDesc(t('settings.sync.attachmentFolder.desc'))
       .addText((text) => {
-        new FolderSuggest(this.app, text.inputEl)
         text
           .setPlaceholder(t('settings.sync.attachmentFolder.placeholder'))
-          .setValue(this.plugin.settings.attachmentFolder)
+          .setValue(this.pathValue(text, 'attachmentFolder'))
           .onChange(async (value) => {
-            if (!validateTemplate(value, '附件文件夹')) return
+            if (!validateTemplate(value, t('settings.sync.attachmentFolder.name'))) return
             this.plugin.settings.attachmentFolder = value
             await this.plugin.saveSettings(true)
 
@@ -872,9 +1063,9 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setPlaceholder(t('settings.sync.articleFilename.placeholder'))
-          .setValue(this.plugin.settings.filename)
+          .setValue(this.pathValue(text, 'filename'))
           .onChange(async (value) => {
-            if (!validateTemplate(value, '文章文件名')) return
+            if (!validateTemplate(value, t('settings.sync.articleFilename.name'))) return
             this.plugin.settings.filename = value
             await this.plugin.saveSettings(true)
           }),
@@ -891,7 +1082,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           .setPlaceholder(t('settings.sync.articleFilenameDateFormat.placeholder'))
           .setValue(this.plugin.settings.filenameDateFormat)
           .onChange(async (value) => {
-            if (!validateDateFormat(value, '文章文件名日期格式')) return
+            if (!validateDateFormat(value, t('settings.sync.articleFilenameDateFormat.name'))) return
             this.plugin.settings.filenameDateFormat = value
             await this.plugin.saveSettings(true)
           }),
@@ -952,7 +1143,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         .setPlaceholder(t('settings.advanced.frontMatterTemplate.placeholder'))
         .setValue(this.plugin.settings.frontMatterTemplate)
         .onChange(async (value) => {
-          if (!validateTemplate(value, '前置元数据模板')) return
+          if (!validateTemplate(value, t('settings.advanced.frontMatterTemplate.name'))) return
           this.plugin.settings.frontMatterTemplate = value
           updateFrontMatterStatus(value)
           await this.plugin.saveSettings(true)
@@ -1052,7 +1243,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           .setPlaceholder(t('settings.advanced.articleTemplate.placeholder'))
           .setValue(this.plugin.settings.template)
           .onChange(async (value) => {
-            if (!validateTemplate(value, '文章模板', { allowTemplaterTags: true })) return
+            if (!validateTemplate(value, t('settings.advanced.articleTemplate.name'), { allowTemplaterTags: true })) return
             updateArticleTemplaterStatus(value)
             // if template is empty, use default template
             this.plugin.settings.template = value
@@ -1197,18 +1388,75 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       noMarkerSetting.settingEl.addClass('notehelper-no-marker-toggle-row')
     }
 
+    if ([MergeMode.NONE, MergeMode.DUAL].includes(this.plugin.settings.mergeMode)) {
+      const dual = this.plugin.settings.mergeMode === MergeMode.DUAL
+      new Setting(messageBody)
+        .setName(t('messageSeparate.enabled'))
+        .setDesc(t('messageSeparate.enabledDesc') + (dual ? ' ' + t('messageSeparate.enabledDescDual') : ''))
+        .addToggle(toggle => toggle.setValue(this.plugin.settings.messageSeparateEnabled).onChange(async value => {
+          this.plugin.settings.messageSeparateEnabled = value
+          await this.plugin.saveSettings(true); this.display()
+        })).settingEl.addClass('notehelper-message-separate-toggle')
+      if (this.plugin.settings.messageSeparateEnabled) {
+        for (const [key, label] of [
+          ['messageSeparateFolder', 'folder'], ['messageSeparateFolderDateFormat', 'folderDateFormat'],
+          ['messageSeparateFilename', 'filename'], ['messageSeparateFilenameDateFormat', 'filenameDateFormat'],
+        ] as const) {
+          const name = t(`messageSeparate.${label}`)
+          const row = new Setting(messageBody).setName(name).setDesc(t('messageSeparate.fallback'))
+          row.addText(text => text.setPlaceholder(DEFAULT_SETTINGS[key])
+            .setValue(key.endsWith('DateFormat') ? this.plugin.settings[key] : this.pathValue(text, key))
+            .onChange(async value => {
+              if (key.endsWith('DateFormat') ? !validateDateFormat(value, name) : !validateTemplate(value, name)) return
+              this.plugin.settings[key] = value; await this.plugin.saveSettings(true)
+            }))
+          row.settingEl.dataset.messageKey = key
+        }
+        for (const [key, label] of [
+          ['messageSeparateFrontMatterTemplate', 'frontMatterTemplate'], ['messageSeparateTemplate', 'template'],
+        ] as const) {
+          const statusEl = messageBody.createDiv({ cls: 'notehelper-merge-template-status' })
+          const updateStatus = (value: string) => {
+            const msg = this.templaterStatusText(value)
+            statusEl.toggleClass('is-visible', !!msg)
+            statusEl.setText(msg || '')
+          }
+          const name = t(`messageSeparate.${label}`)
+          const row = new Setting(messageBody).setName(name).setDesc(t('messageSeparate.templateDesc'))
+          row.addTextArea(text => {
+            text.setPlaceholder(t('messageSeparate.fallback'))
+              .setValue(this.plugin.settings[key])
+              .onChange(async value => {
+                if (!validateTemplate(value, name, { allowTemplaterTags: true })) return
+                this.plugin.settings[key] = value
+                updateStatus(value)
+                await this.plugin.saveSettings(true)
+              })
+            text.inputEl.rows = 4
+            text.inputEl.cols = 30
+            addTemplateVariableButton(this.app, text, 'note')
+          })
+          row.addExtraButton(button => button.setIcon('reset').setTooltip(t('messageSeparate.reset')).onClick(async () => {
+            this.plugin.settings[key] = ''; await this.plugin.saveSettings(true); this.display()
+          }))
+          row.settingEl.dataset.messageKey = key
+          row.settingEl.insertAdjacentElement('afterend', statusEl)
+          updateStatus(this.plugin.settings[key])
+        }
+      }
+    }
+
     // 消息文件夹设置 - 只在合并模式不是 NONE 时显示
     if (this.plugin.settings.mergeMode !== MergeMode.NONE) {
       new Setting(messageBody)
         .setName(t('settings.sync.messageFolder.name'))
         .setDesc(t('settings.sync.messageFolder.desc'))
         .addText((text) => {
-          new FolderSuggest(this.app, text.inputEl)
-          text
+            text
             .setPlaceholder(this.plugin.settings.folder)
-            .setValue(this.plugin.settings.messageFolder)
+            .setValue(this.pathValue(text, 'messageFolder'))
             .onChange(async (value) => {
-              if (value && !validateTemplate(value, '消息文件夹')) return
+              if (!validateTemplate(value, t('settings.sync.messageFolder.name'))) return
               this.plugin.settings.messageFolder = value
               await this.plugin.saveSettings(true)
             })
@@ -1240,9 +1488,9 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         .addText((text) =>
           text
             .setPlaceholder(t('settings.sync.messageFileName.placeholder'))
-            .setValue(this.plugin.settings.singleFileName)
+            .setValue(this.pathValue(text, 'singleFileName'))
             .onChange(async (value) => {
-              if (!validateTemplate(value, '消息文件名称')) return
+              if (!validateTemplate(value, t('settings.sync.messageFileName.name'))) return
               this.plugin.settings.singleFileName = value || '同步助手_{{{date}}}'
               await this.plugin.saveSettings(true)
             }),
@@ -1286,7 +1534,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             .setPlaceholder(t('settings.sync.messageFileDateFormat.placeholder'))
             .setValue(this.plugin.settings.singleFileDateFormat)
             .onChange(async (value) => {
-              if (!validateDateFormat(value, '消息文件日期格式')) return
+              if (!validateDateFormat(value, t('settings.sync.messageFileDateFormat.name'))) return
               this.plugin.settings.singleFileDateFormat = value || 'yyyy-MM-dd'
               await this.plugin.saveSettings(true)
             }),
@@ -1351,7 +1599,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             .setPlaceholder(t('settings.sync.mergeFileTemplate.placeholder'))
             .setValue(this.plugin.settings.mergeFileTemplate ?? '')
             .onChange(async (value) => {
-              if (!validateTemplate(value, '合并文件模板')) return
+              if (!validateTemplate(value, t('settings.sync.mergeFileTemplate.name'))) return
               updateMergeFileTemplateStatus(value)
               // 留空是合法且有意义的取值（=恢复空文件），不做默认值回填。
               this.plugin.settings.mergeFileTemplate = value
@@ -1396,64 +1644,20 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 
     const assistantTemplateSetting = new Setting(messageBody)
       .setName(t('settings.advanced.assistantTemplate.name'))
-      .setDesc(
-        createFragment((fragment) => {
-          fragment.append(
-            t('settings.advanced.assistantTemplate.desc'),
-            fragment.createEl('br'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varsIntro'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varDate'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varTimeSaved'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varTimeSavedShort'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varContent'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varTitle'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varId'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.varLabels'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.functionsHint'),
-            fragment.createEl('br'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.examplesIntro'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.example1'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.example2'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.example3'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.example4'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.example5'),
-            fragment.createEl('br'),
-            t('settings.advanced.assistantTemplate.example6'),
-            fragment.createEl('br'),
-            fragment.createEl('a', {
-              text: t('settings.advanced.assistantTemplate.debugLink'),
-              href: 'https://obsidian.notebooksyncer.com/template-playground',
-            }),
-          )
-        }),
-      )
+      .setDesc(simulatorDesc(t('settings.advanced.assistantTemplate.desc')))
       .addTextArea((text) => {
         text
           .setPlaceholder(t('settings.advanced.assistantTemplate.placeholder'))
           .setValue(this.plugin.settings.wechatMessageTemplate)
           .onChange(async (value) => {
-            if (!validateTemplate(value, '助手消息模板', { allowTemplaterTags: true })) return
+            if (!validateTemplate(value, t('settings.advanced.assistantTemplate.name'), { allowTemplaterTags: true })) return
             updateAssistantTemplaterStatus(value)
             this.plugin.settings.wechatMessageTemplate = value || '---\\n## 📅 {{{dateSaved}}}\\n{{{content}}}'
             await this.plugin.saveSettings(true)
           })
         text.inputEl.setAttr('rows', 4)
         text.inputEl.setAttr('cols', 30)
+        addTemplateVariableButton(this.app, text, 'assistant')
       })
       .addExtraButton((button) => {
         button
@@ -1474,33 +1678,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
     // （默认 = 历史硬编码的灰色小字；变量 timestamp / date / time / timeShort + 内置函数）
     const chatRecordTimestampSetting = new Setting(messageBody)
       .setName(t('settings.advanced.chatRecordTimestamp.name'))
-      .setDesc(
-        createFragment((fragment) => {
-          fragment.append(
-            t('settings.advanced.chatRecordTimestamp.desc'),
-            fragment.createEl('br'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.varsIntro'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.varTimestamp'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.varDate'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.varTime'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.varTimeShort'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.functionsHint'),
-            fragment.createEl('br'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.examplesIntro'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.example1'),
-            fragment.createEl('br'),
-            t('settings.advanced.chatRecordTimestamp.example2'),
-          )
-        }),
-      )
+      .setDesc(simulatorDesc(t('settings.advanced.chatRecordTimestamp.desc')))
       .addTextArea((text) => {
         text
           .setPlaceholder(t('settings.advanced.chatRecordTimestamp.placeholder'))
@@ -1509,7 +1687,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
               DEFAULT_SETTINGS.chatRecordTimestampTemplate,
           )
           .onChange(async (value) => {
-            if (!validateTemplate(value, '聊天记录时间样式', { allowTemplaterTags: true })) return
+            if (!validateTemplate(value, t('settings.advanced.chatRecordTimestamp.name'), { allowTemplaterTags: true })) return
             // 空串 = 默认样式（与其它模板的 value || default 一致；渲染侧同样兜底）
             this.plugin.settings.chatRecordTimestampTemplate =
               value || DEFAULT_SETTINGS.chatRecordTimestampTemplate
@@ -1517,6 +1695,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           })
         text.inputEl.setAttr('rows', 2)
         text.inputEl.setAttr('cols', 30)
+        addTemplateVariableButton(this.app, text, 'timestamp')
       })
       .addExtraButton((button) => {
         button
@@ -1532,6 +1711,95 @@ export class OmnivoreSettingTab extends PluginSettingTab {
       })
     chatRecordTimestampSetting.settingEl.addClass('notehelper-chat-record-timestamp-row')
 
+
+    const emailBody = this.createSection(
+      pathBody, 'path-email', t('emailSettings.section'), '', { sub: true },
+    )
+    new Setting(emailBody)
+      .setName(t('emailSettings.enabled'))
+      .setDesc(t('emailSettings.enabledDesc'))
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.emailSettingsEnabled)
+        .onChange(async value => {
+          this.plugin.settings.emailSettingsEnabled = value
+          await this.plugin.saveSettings(true)
+          this.display()
+        }))
+      .settingEl.addClass('notehelper-email-toggle-row')
+
+    if (this.plugin.settings.emailSettingsEnabled) {
+      new Setting(emailBody)
+        .setName(t('emailSettings.attachments'))
+        .setDesc(t('emailSettings.attachmentsDesc'))
+        .addToggle(toggle => toggle
+          .setValue(this.plugin.settings.emailIncludeAttachmentDocs)
+          .onChange(async value => {
+            this.plugin.settings.emailIncludeAttachmentDocs = value
+            await this.plugin.saveSettings(true)
+          }))
+        .settingEl.addClass('notehelper-email-attachments-row')
+
+      const textFields = [
+        ['emailFolder', 'folder'],
+        ['emailFolderDateFormat', 'folderDateFormat'],
+        ['emailFilename', 'filename'],
+        ['emailFilenameDateFormat', 'filenameDateFormat'],
+      ] as const
+      for (const [key, label] of textFields) {
+        const name = t(`emailSettings.${label}`)
+        new Setting(emailBody)
+          .setName(name)
+          .setDesc(t('emailSettings.fallback'))
+          .addText(text => text
+            .setPlaceholder(DEFAULT_SETTINGS[key])
+            .setValue(key === 'emailFolder' || key === 'emailFilename' ? this.pathValue(text, key) : this.plugin.settings[key])
+            .onChange(async value => {
+              if (key.endsWith('DateFormat')
+                ? !validateDateFormat(value, name)
+                : !validateTemplate(value, name)) return
+              this.plugin.settings[key] = value
+              await this.plugin.saveSettings(true)
+            }))
+          .settingEl.addClass(`notehelper-email-${label}-row`)
+      }
+      for (const [key, label] of [
+        ['emailFrontMatterTemplate', 'frontMatterTemplate'],
+        ['emailTemplate', 'template'],
+      ] as const) {
+        const statusEl = emailBody.createDiv({ cls: 'notehelper-merge-template-status' })
+        const updateStatus = (value: string) => {
+          const msg = this.templaterStatusText(value)
+          statusEl.toggleClass('is-visible', !!msg)
+          statusEl.setText(msg || '')
+        }
+        const name = t(`emailSettings.${label}`)
+        const row = new Setting(emailBody)
+          .setName(name)
+          .setDesc(t('emailSettings.fallback'))
+          .addTextArea(text => {
+            text.setPlaceholder(t('emailSettings.fallback'))
+              .setValue(this.plugin.settings[key])
+              .onChange(async value => {
+                if (!validateTemplate(value, name, { allowTemplaterTags: key === 'emailTemplate' })) return
+                this.plugin.settings[key] = value
+                updateStatus(value)
+                await this.plugin.saveSettings(true)
+              })
+            text.inputEl.rows = 4
+            text.inputEl.cols = 30
+          })
+          .addExtraButton(button => button.setIcon('reset')
+            .setTooltip(t('emailSettings.reset'))
+            .onClick(async () => {
+              this.plugin.settings[key] = ''
+              await this.plugin.saveSettings(true)
+              this.display()
+            }))
+        row.settingEl.addClass(`notehelper-email-${label}-row`)
+        row.settingEl.insertAdjacentElement('afterend', statusEl)
+        updateStatus(this.plugin.settings[key])
+      }
+    }
 
     // ▸ 模板设置（二级折叠，默认收起）
     const templateBody = this.createSection(
@@ -1607,7 +1875,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
           .setPlaceholder(t('settings.advanced.dateSavedFormat.placeholder'))
           .setValue(this.plugin.settings.dateSavedFormat)
           .onChange(async (value) => {
-            if (!validateDateFormat(value, '保存日期格式')) return
+            if (!validateDateFormat(value, t('settings.advanced.dateSavedFormat.name'))) return
             this.plugin.settings.dateSavedFormat = value
             await this.plugin.saveSettings(true)
           }),
@@ -1775,9 +2043,9 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         .addText((text) =>
           text
             .setPlaceholder(t('settings.image.storageFolder.placeholder'))
-            .setValue(this.plugin.settings.imageAttachmentFolder)
+            .setValue(this.pathValue(text, 'imageAttachmentFolder'))
             .onChange(async (value) => {
-              if (!validateTemplate(value, '图片存储文件夹')) return
+              if (!validateTemplate(value, t('settings.image.storageFolder.name'))) return
               this.plugin.settings.imageAttachmentFolder = value || DEFAULT_SETTINGS.imageAttachmentFolder
               await this.plugin.saveSettings(true)
 
@@ -1860,11 +2128,9 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         .setName(t('settings.diary.folder.name'))
         .setDesc(t('settings.diary.folder.desc'))
         .addText((text) => {
-          new FolderSuggest(this.app, text.inputEl)
           text
-             
             .setPlaceholder(t('settings.diary.folder.placeholder'))
-            .setValue(this.plugin.settings.diaryFolder)
+            .setValue(this.pathValue(text, 'diaryFolder'))
             .onChange(async (value) => {
               this.plugin.settings.diaryFolder = value
               await this.plugin.saveSettings(true)
@@ -2001,42 +2267,11 @@ export class OmnivoreSettingTab extends PluginSettingTab {
         )
 
       // 日记链接模板：取代旧「双链前缀」单行输入框（旧值已在加载时迁移成 `${前缀}{{{link}}}`）。
-      // 多行文本框 + 变量清单 + 实时预览 + 恢复默认；留空 = 恢复默认。
+      // 多行文本框 + 变量选择 + 实时预览 + 恢复默认；留空 = 恢复默认。
       const linkTemplateSetting = new Setting(diaryBody)
         .setName(t('settings.diary.linkTemplate.name'))
-        .setDesc(
-          createFragment((fragment) => {
-            const variable = (code: string, desc: string) => {
-              fragment.append(fragment.createEl('code', { text: code }), ' ', desc, fragment.createEl('br'))
-            }
-            fragment.append(t('settings.diary.linkTemplate.descMain'), fragment.createEl('br'), fragment.createEl('br'))
-            fragment.append(t('settings.diary.linkTemplate.variablesIntro'), fragment.createEl('br'))
-            variable('{{{link}}}', t('settings.diary.linkTemplate.varLink'))
-            variable('{{{title}}}', t('settings.diary.linkTemplate.varTitle'))
-            variable('{{{target}}}', t('settings.diary.linkTemplate.varTarget'))
-            variable('{{{anchor}}}', t('settings.diary.linkTemplate.varAnchor'))
-            variable('{{{heading}}}', t('settings.diary.linkTemplate.varHeading'))
-            variable('{{{dateSaved}}}', t('settings.diary.linkTemplate.varDateSaved'))
-            variable('{{{timeSaved}}}', t('settings.diary.linkTemplate.varTimeSaved'))
-            variable('{{{timeSavedShort}}}', t('settings.diary.linkTemplate.varTimeSavedShort'))
-            variable('{{#isMessage}}…{{/isMessage}}', t('settings.diary.linkTemplate.varIsMessage'))
-            fragment.append(t('settings.diary.linkTemplate.functionsNote'), fragment.createEl('br'), fragment.createEl('br'))
-            fragment.append(t('settings.diary.linkTemplate.examplesIntro'), fragment.createEl('br'))
-            variable('- {{{link}}}', t('settings.diary.linkTemplate.example1'))
-            fragment.append(
-              t('settings.diary.linkTemplate.example2'),
-              fragment.createEl('br'),
-              fragment.createEl('code', { text: t('settings.diary.linkTemplate.exampleBlankLine') }),
-              fragment.createEl('br'),
-              fragment.createEl('code', { text: '---' }),
-              fragment.createEl('br'),
-              fragment.createEl('code', { text: '{{{timeSaved}}}' }),
-              fragment.createEl('br'),
-              fragment.createEl('code', { text: '{{{link}}}' }),
-            )
-          }),
-        )
-      // 稳定选择器：E2E 用它定位这一行
+        .setDesc(simulatorDesc(t('settings.diary.linkTemplate.descMain')))
+      // 稳定选择器：real-obsidian e2e 用它定位这一行
       linkTemplateSetting.settingEl.addClass('notehelper-diary-link-template-row')
 
       // 预览跟在设置行下面，用示例标题 + 当前时间渲染一次真实模板
@@ -2076,7 +2311,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             .setPlaceholder(t('settings.diary.linkTemplate.placeholder'))
             .setValue(this.plugin.settings.diaryLinkTemplate)
             .onChange(async (value) => {
-              if (!validateTemplate(value, '日记链接模板', { allowTemplaterTags: true })) return
+              if (!validateTemplate(value, t('settings.diary.linkTemplate.name'), { allowTemplaterTags: true })) return
               // 留空 = 恢复默认（与文章模板一致）
               this.plugin.settings.diaryLinkTemplate = value
                 ? value
@@ -2086,6 +2321,7 @@ export class OmnivoreSettingTab extends PluginSettingTab {
             })
           text.inputEl.setAttr('rows', 4)
           text.inputEl.setAttr('cols', 30)
+          addTemplateVariableButton(this.app, text, 'diary')
         })
         .addExtraButton((button) => {
           button
@@ -2532,6 +2768,18 @@ export class OmnivoreSettingTab extends PluginSettingTab {
 }
 
 // 确认对话框
+const TEMPLATE_SIMULATOR_URL = 'https://www.bijitongbu.site/tutorials/path-config-tutorial/simulator/'
+
+function simulatorDesc(text: string): DocumentFragment {
+  return createFragment((fragment) => {
+    fragment.append(
+      text,
+      fragment.createEl('br'),
+      fragment.createEl('a', { text: t('pathControls.simulator'), href: TEMPLATE_SIMULATOR_URL }),
+    )
+  })
+}
+
 class ConfirmModal extends Modal {
   private title: string
   private message: string

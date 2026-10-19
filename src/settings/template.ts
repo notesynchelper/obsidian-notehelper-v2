@@ -45,13 +45,18 @@ export const sanitizeRenderedYaml = (rendered: string): string => {
     .split('\n')
     .map((line) => {
       // 匹配 "key: value" 格式（key 不含特殊字符）
-      const match = line.match(/^(\s*[\w][\w.\- ]*\s*:)\s*(.+)$/)
+      const match = line.match(
+        /^(\s*[\w㐀-䶿一-鿿豈-﫿][\w.\- 㐀-䶿一-鿿豈-﫿]*\s*:)\s*(.+)$/,
+      )
       if (!match) return line
       const [, keyPart, valuePart] = match
       const trimmed = valuePart.trim()
 
       // 空值不处理
       if (!trimmed) return line
+
+      // 块标量头不能加引号，否则缩进正文会失去所属的值。
+      if (/^[|>][0-9]*[+-]?$/.test(trimmed)) return line
 
       // 已经用引号包裹的不处理
       if (
@@ -194,6 +199,9 @@ export interface HighlightView {
 export type ArticleView =
   | {
       id: string
+      rawTitle?: string
+      messageTitle?: string
+      messageType?: string
       title: string
       omnivoreUrl: string
       siteName: string
@@ -249,6 +257,9 @@ export type ArticleView =
 export type View =
   | ({
       id: string
+      rawTitle?: string
+      messageTitle?: string
+      messageType?: string
       title: string
       omnivoreUrl: string
       siteName: string
@@ -808,6 +819,7 @@ export const renderItemContent = (
   const articleView: ArticleView = {
     id: item.id,
     title: item.title,
+    ...messageTemplateValues(item),
     omnivoreUrl: `https://omnivore.app/me/${item.slug}`,
     siteName,
     originalUrl: item.originalArticleUrl || item.url,
@@ -990,6 +1002,9 @@ export const renderItemContent = (
 // 是用户有意的目录层级，必须保留。
 const PATH_FREE_TEXT_FIELDS = [
   'title',
+  'rawTitle',
+  'messageTitle',
+  'messageType',
   'author',
   'siteName',
   'description',
@@ -1013,6 +1028,7 @@ export const render = (
     : undefined
   const view: View = {
     ...item,
+    ...messageTemplateValues(item),
     siteName:
       item.siteName || siteNameFromUrl(item.originalArticleUrl || item.url),
     author: item.author || 'unknown',
@@ -1055,10 +1071,29 @@ export const preParseTemplate = (template: string) => {
  * 检测是否为企微消息
  * 标题格式: 同步助手_yyyyMMdd_xxx_类型
  */
+export function parseMessageTitle(title: string) {
+  const match = /^同步助手_(\d{8})_([\s\S]*)_([^_]+)$/.exec(title)
+  if (!match || !['文本','图片','视频','语音','文件','聊天记录','笔记','媒体'].includes(match[3])) {
+    return { date: '', desc: title, type: '', cleanTitle: title }
+  }
+  const desc = match[2].replace(/_+/g, '_').replace(/^_+|_+$/g, '').replace(/[\r\n]+/g, ' ').trim()
+  return { date: match[1], desc, type: match[3], cleanTitle: desc || match[3] }
+}
+export function messageTemplateValues(item: Item) {
+  const rawTitle = (item as Item & { rawTitle?: string }).rawTitle ?? item.title
+  const parsed = parseMessageTitle(rawTitle || '')
+  return { rawTitle, messageTitle: parsed.cleanTitle, messageType: parsed.type }
+}
+export function standaloneMessageItem(item: Item): Item {
+  const values = messageTemplateValues(item)
+  return { ...item, ...values, title: values.messageTitle }
+}
+
 export const isWeChatMessage = (item: Item): boolean => {
   // 防御：render() 现在（注入 isMessage 后）会对路径/文件名模板的 stub item 调用本函数，
   // 这类 item 的 title 可能缺失/非字符串，不能直接 .startsWith 否则 render 整体抛错。
-  return typeof item.title === 'string' && item.title.startsWith('同步助手_')
+  const rawTitle = (item as Item & { rawTitle?: string }).rawTitle ?? item.title
+  return typeof rawTitle === 'string' && rawTitle.startsWith('同步助手_')
 }
 
 /**
@@ -1211,6 +1246,7 @@ const buildMessageView = (
 ) => ({
   id: item.id,
   title: item.title,
+  ...messageTemplateValues(item),
   content,
   ...buildDateView(item, dateSavedFormat),
   savedAt: item.savedAt,

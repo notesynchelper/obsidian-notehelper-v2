@@ -231,6 +231,12 @@ export class ConfigMigrationManager {
       'frontMatterTemplate', 'highlightOrder', 'enableHighlightColorRender',
       'highlightManagerId', 'highlightColorMapping', 'singleFileName',
       'wechatMessageTemplate',
+      // Independent profiles are user settings too: stale backups must not replace newer custom values.
+      'messageSeparateEnabled', 'messageSeparateFolder', 'messageSeparateFolderDateFormat',
+      'messageSeparateFilename', 'messageSeparateFilenameDateFormat',
+      'messageSeparateFrontMatterTemplate', 'messageSeparateTemplate',
+      'emailSettingsEnabled', 'emailIncludeAttachmentDocs', 'emailFolder', 'emailFolderDateFormat',
+      'emailFilename', 'emailFilenameDateFormat', 'emailFrontMatterTemplate', 'emailTemplate',
       // 聊天记录时间样式：与助手消息模板同为用户手写模板，迁移 / backup restore 必须保留
       'chatRecordTimestampTemplate',
       // 以下字段之前遗漏，会导致迁移时被重置为默认值

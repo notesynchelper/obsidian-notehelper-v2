@@ -615,6 +615,15 @@ export const getItems = async (
   return [items, response.pageInfo.hasNextPage]
 }
 
+export type ApiKeyVerification = { status: 'valid'; count: number } | { status: 'invalid' | 'network' }
+export async function verifyApiKey(apiKey: string, endpoint = 'https://obsidian.notebooksyncer.com/api/graphql'): Promise<ApiKeyVerification> {
+  try { return { status: 'valid', count: await withTimeoutP(getArticleCount(endpoint, apiKey), FALLBACK_BUDGET_MS.lightGet + TIMEOUTS.probe) } }
+  catch (error) {
+    const status = (error as { status?: number })?.status
+    return { status: status === 401 || /(?:HTTP|status)\s*:?\s*401\b/i.test(String(error)) ? 'invalid' : 'network' }
+  }
+}
+
 export const getArticleCount = async (
   endpoint: string,
   apiKey: string,

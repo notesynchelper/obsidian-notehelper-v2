@@ -32,6 +32,7 @@ jest.mock('../src/logger', () => ({
 }))
 
 jest.mock('../src/util', () => ({
+  ...jest.requireActual('../src/util'),
   formatDate: jest.fn((dateISO: string, _format: string) => {
     return dateISO.slice(0, 10)
   }),
@@ -163,6 +164,25 @@ describe('DailyNoteResolver', () => {
       expect(config.dateFormat).toBe('YYYY-MM-DD')
       expect(config.formatSource).toBe('manual')
     })
+  })
+
+  it('manual diary folders render item variables and sanitize URL path segments', async () => {
+    const expected = 'Diaries/2024/A-B/2024-01-15.md'
+    const resolver = new DailyNoteResolver(createMockApp([expected]), {
+      ...DEFAULT_SETTINGS, autoCreateDiaryNote: false,
+      diaryFolder: 'Diaries/{{{yearSaved}}}/{{{title}}}', diaryDateFormat: 'yyyy-MM-dd',
+    })
+    const item = { savedAt: '2024-01-15T10:30:00Z', title: 'A/B', siteName: 'Email', url: 'email://test' } as any
+    expect(resolver.diaryPath(item.savedAt, item)).toBe(expected)
+    expect((await resolver.resolve(item.savedAt, item)).file?.path).toBe(expected)
+  })
+
+  it('diary folders can render saved-date variables without an item', () => {
+    const resolver = new DailyNoteResolver(createMockApp(), {
+      ...DEFAULT_SETTINGS, autoCreateDiaryNote: false,
+      diaryFolder: 'Diaries/{{{yearSaved}}}', diaryDateFormat: 'yyyy-MM-dd',
+    })
+    expect(resolver.diaryPath('2024-01-15T10:30:00Z')).toBe('Diaries/2024/2024-01-15.md')
   })
 
   describe('resolve', () => {

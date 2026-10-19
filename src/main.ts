@@ -26,7 +26,7 @@ import {
   render,
   renderFilename,
   renderItemContent,
-  isWeChatMessage,
+  standaloneMessageItem,
   OLD_DEFAULT_TEMPLATE,
 } from './settings/template'
 import { OmnivoreSettingTab } from './settingsTab'
@@ -40,7 +40,6 @@ import {
   replaceIllegalCharsFile,
   replaceIllegalCharsFolder,
   setOrUpdateHighlightColors,
-  unhideVaultPath,
 } from './util'
 import { ConfigMigrationManager } from './configMigration'
 import { ImageLocalizer } from './imageLocalizer/imageLocalizer'
@@ -53,6 +52,8 @@ import { metaFromFrontmatter } from './common/localizerItemMeta'
 import { adjustSyncCursor, advanceSyncCursor, shouldMarkInitialSyncCompleted } from './syncCursorAdjust'
 import { SyncContext } from './sync/SyncContext'
 import { findLegacyClaimFile, legacyPathOf } from './sync/legacyPathClaim'
+import { normalizeApiKey } from './settings/apiKeyValidation'
+import { resolveItemKind, resolveArticleLikeProfile, shouldMergeItem, templateNeedsVariable } from './sync/itemRoute'
 import { latestSyncCursor, isCursorCovered } from './sync/cursorDedupe'
 import { SyncNoticeManager, type SyncNoticeReminder } from './sync/SyncNoticeManager'
 import {
@@ -99,6 +100,7 @@ export default class OmnivorePlugin extends Plugin {
   private backgroundLocalizationPromise: Promise<void> | null = null
   private backgroundLocalizationRequested = false
   private backgroundLocalizationManual = false
+  private backgroundLocalizationBurnRequested = false
   private pendingLocalizationFiles = new Set<TFile>()
   private localizationDisposed = false
   private firstSyncNoticeTimeout: number | null = null
@@ -534,7 +536,7 @@ export default class OmnivorePlugin extends Plugin {
           const files = pendingStore.list().map(r => this.resolveLocalizationFile(r.filePath)).filter((f): f is TFile => !!f)
           await localizer.enqueuePendingRecords(path => this.resolveLocalizationFile(path), 0, true)
           await localizer.processQueue(undefined, true)
-          this.startBackgroundLocalization(files, false)
+          this.startBackgroundLocalization(files, false, !this.settings.debugMode)
           this.refreshFileExplorer()
         }, () => this.settings.imageMode === ImageMode.LOCAL)
 
@@ -637,13 +639,20 @@ export default class OmnivorePlugin extends Plugin {
           const files = pendingStore.list().map(r => this.resolveLocalizationFile(r.filePath)).filter((f): f is TFile => !!f)
           localizer.resumePending(path => this.resolveLocalizationFile(path), true)
           await localizer.processQueue(undefined, true)
-          this.startBackgroundLocalization(files, false)
+          this.startBackgroundLocalization(files, false, !this.settings.debugMode)
           this.refreshFileExplorer()
         })
         this.registerEvent(
           this.app.vault.on('rename', (file, oldPath) => {
             if (file instanceof TFile && file.extension === 'md') {
               localizer.handleNoteRename(oldPath, file.path)
+            } else if (file instanceof TFolder) {
+              // Folder renames do not emit a separate rename event for every child.
+              for (const record of pendingStore.list()) {
+                if (record.filePath.startsWith(`${oldPath}/`)) {
+                  localizer.handleNoteRename(record.filePath, file.path + record.filePath.slice(oldPath.length))
+                }
+              }
             }
           }),
         )
@@ -1078,6 +1087,7 @@ export default class OmnivorePlugin extends Plugin {
       void this.imageLocalizer.getUrlLocalMap().flush()
       void this.imageLocalizer.getPendingStore()?.flush()
     }
+    void this.attachmentLocalizer?.getPendingStore()?.flush()
     // registerInterval 会自动清理定时器，无需手动处理
   }
 
@@ -1383,7 +1393,14 @@ export default class OmnivorePlugin extends Plugin {
     }
   }
 
+  latestPathPreviewItem?: Item
+
   async fetchOmnivore(manualSync = true) {
+    const cleanKey = normalizeApiKey(this.settings.apiKey)
+    if (cleanKey !== this.settings.apiKey) {
+      this.settings.apiKey = cleanKey
+      await this.saveSettings(true)
+    }
     // 调试模式：仅手动同步生效（后台 syncOnStart/定时同步照常按用户配置 + 真实游标跑）。
     // 生效时用 syncSettings（用户设置浅拷贝，位置字段替换为默认值 + 强制关闭阅后即焚）跑本轮，
     // 持久化的 this.settings 原封不动 —— 关掉调试即彻底复原（见 DebugMode / 设计 §1）。
@@ -1398,7 +1415,6 @@ export default class OmnivorePlugin extends Plugin {
       template,
       folder,
       messageFolder,
-      filename,
       mergeMode,
       frontMatterVariables,
       frontMatterTemplate,
@@ -1407,7 +1423,6 @@ export default class OmnivorePlugin extends Plugin {
       mergeFileTemplate,
       // 位置/文件名日期格式：本轮全部走 syncSettings，调试模式才能真正落到默认位置（codex #4）
       folderDateFormat,
-      filenameDateFormat,
       singleFileDateFormat,
     } = syncSettings
     const effectiveMessageFolder = messageFolder || folder
@@ -1507,30 +1522,24 @@ export default class OmnivorePlugin extends Plugin {
     try {
       log(`笔记同步助手开始同步，自: '${syncAt}'`)
 
-      // 市场版：不做 Templater 插值接力（该能力依赖 Templater 未公开的内部 API）。
-      // 模板里的 <% %> 标签仍会被掩码保护（防 Mustache 解析炸裂），并原样保留在输出中。
+      // 市场版仅渲染文本模板；所有 <% %> 标签掩码后原样保留，不调用 Templater 内部 API。
       const effectiveTemplate = template
-      const effectiveWechatMessageTemplate = this.settings.wechatMessageTemplate
-
-      // pre-parse template
-      log('🔧 开始解析前端模板')
-      if (frontMatterTemplate) {
-        preParseTemplate(frontMatterTemplate)
+      const effectiveWechatMessageTemplate = syncSettings.wechatMessageTemplate
+      const profileSettings = syncSettings
+      const useMessageSeparateTemplates = syncSettings.messageSeparateEnabled &&
+        (mergeMode === MergeMode.NONE || mergeMode === MergeMode.DUAL)
+      if (frontMatterTemplate) preParseTemplate(maskTemplaterTags(frontMatterTemplate).text)
+      const activeTemplates = [effectiveTemplate, frontMatterTemplate, effectiveWechatMessageTemplate]
+      if (useMessageSeparateTemplates) {
+        const profile = resolveArticleLikeProfile('message', profileSettings)
+        activeTemplates.push(profile.template, profile.frontMatterTemplate)
       }
-      log('🔧 开始解析主模板')
-      // 未接力成功的 <% %> 标签仍在文本里，Mustache.parse 会被表达式里的 {{ 弄炸
-      // → 掩码后再 parse（renderItemContent 渲染时同样掩码，两边一致）
-      const templateSpans = preParseTemplate(maskTemplaterTags(effectiveTemplate).text)
-      log('🔧 模板解析完成，templateSpans:', templateSpans)
-      // check if we need to include content or file attachment
-      const includeContent = templateSpans.some(
-        (templateSpan) => templateSpan[1] === 'content',
-      )
-      log('🔧 includeContent:', includeContent)
-      const includeFileAttachment = templateSpans.some(
-        (templateSpan) => templateSpan[1] === 'fileAttachment',
-      )
-      log('🔧 includeFileAttachment:', includeFileAttachment)
+      if (syncSettings.emailSettingsEnabled) {
+        const profile = resolveArticleLikeProfile('email', profileSettings)
+        activeTemplates.push(profile.template, profile.frontMatterTemplate)
+      }
+      const includeContent = activeTemplates.some(tpl => templateNeedsVariable(tpl, 'content'))
+      const includeFileAttachment = activeTemplates.some(tpl => templateNeedsVariable(tpl, 'fileAttachment'))
 
       const size = 15
 
@@ -1598,6 +1607,10 @@ export default class OmnivorePlugin extends Plugin {
             // 对于企微消息,从标题提取日期用于文件夹路径
             // 清洗【前】的原文留一份：升级前那条旧路径要从它重算，
             // 不能拿清洗后的路径把全角＃换回半角（见 sync/legacyPathClaim.ts）。
+            if (!this.latestPathPreviewItem || item.savedAt > this.latestPathPreviewItem.savedAt) this.latestPathPreviewItem = item
+            const kind = resolveItemKind(item, syncSettings)
+            const profile = resolveArticleLikeProfile(kind, profileSettings)
+            const standaloneItem = kind === 'message' && syncSettings.messageSeparateEnabled ? standaloneMessageItem(item) : item
             let rawFolderPath: string
             if (isSingleFile && item.title.startsWith('同步助手_')) {
               const titleParts = item.title.split('_')
@@ -1625,7 +1638,7 @@ export default class OmnivorePlugin extends Plugin {
             }
           } else {
             rawFolderPath = normalizePath(
-              render(item, folder, folderDateFormat, { pathSafe: true }),
+              render(standaloneItem, profile.folder, profile.folderDateFormat, { pathSafe: true }),
             )
           }
           const folderName = replaceIllegalCharsFolder(rawFolderPath)
@@ -1638,7 +1651,7 @@ export default class OmnivorePlugin extends Plugin {
           const templateAttachment = item.pageType === 'FILE' && includeFileAttachment
             ? prepareTemplateFileAttachment({
               url: item.url,
-              folder: unhideVaultPath(normalizePath(render(item, this.settings.attachmentFolder, this.settings.folderDateFormat, { pathSafe: true }))),
+              folder: replaceIllegalCharsFolder(normalizePath(render(item, this.settings.attachmentFolder, this.settings.folderDateFormat, { pathSafe: true }))),
               fileName: `${replaceIllegalCharsFile(item.id)}.pdf`,
               savedAt: item.savedAt ?? undefined,
             }, item.updatedAt ?? item.savedAt ?? '')
@@ -1651,9 +1664,7 @@ export default class OmnivorePlugin extends Plugin {
           // - MergeMode.MESSAGES: 只合并企微消息
           // - MergeMode.DUAL: 同 MESSAGES（合并副本），另外再写一份独立笔记
           // - MergeMode.ALL: 合并所有文章
-          const shouldMergeIntoSingleFile =
-            ((mergeMode === MergeMode.MESSAGES || dualWrite) && isWeChatMessage(item)) ||
-            mergeMode === MergeMode.ALL
+          const shouldMergeIntoSingleFile = shouldMergeItem(kind, mergeMode)
 
           // 市场版合规：先剥离正文里的「积分充值二维码」推广图（插件界面外不得
           // 出现推广，会员入口统一在设置页）；再按需做标签转义。都用浅拷贝。
@@ -1671,8 +1682,8 @@ export default class OmnivorePlugin extends Plugin {
           // 同一条 item 在双写模式下要渲染两次（合并副本 merged=true / 独立副本 merged=false），
           // 抽成局部闭包避免两处 14 个位置参数漂移。
           const renderFor = (merged: boolean): string => withTemplateFileAttachment(renderItemContent(
-            itemForRender,
-            effectiveTemplate,
+            merged ? itemForRender : { ...standaloneItem, content: itemForRender.content },
+            merged ? effectiveTemplate : profile.template,
             highlightOrder,
             this.settings.enableHighlightColorRender
               ? this.settings.highlightManagerId
@@ -1681,7 +1692,7 @@ export default class OmnivorePlugin extends Plugin {
             this.settings.dateSavedFormat,
             merged,
             frontMatterVariables,
-            frontMatterTemplate,
+            merged ? frontMatterTemplate : profile.frontMatterTemplate,
             syncSettings.sectionSeparator,
             syncSettings.sectionSeparatorEnd,
             fileAttachment,
@@ -1692,7 +1703,9 @@ export default class OmnivorePlugin extends Plugin {
           const content = renderFor(shouldMergeIntoSingleFile)
           // log(`🔧 内容渲染完成`)
           // use the custom filename
-          let rawFilename = renderFilename(item, filename, filenameDateFormat)
+          const filenameProfile = shouldMergeIntoSingleFile
+            ? resolveArticleLikeProfile('article', profileSettings) : profile
+          let rawFilename = renderFilename(shouldMergeIntoSingleFile ? item : standaloneItem, filenameProfile.filename, filenameProfile.filenameDateFormat)
 
           // 合并文件模板的 {{{date}}}：默认取 item.savedAt，企微消息标题里带
           // yyyyMMdd 时（下方分支）改用那个日期 —— 与合并文件名里的日期同源。
@@ -1734,9 +1747,7 @@ export default class OmnivorePlugin extends Plugin {
             this.app.vault.getAbstractFileByPath(normalizedPath)
 
           // 判断是否需要合并
-          const shouldMerge =
-            ((mergeMode === MergeMode.MESSAGES || dualWrite) && isWeChatMessage(item)) ||
-            mergeMode === MergeMode.ALL
+          const shouldMerge = shouldMergeIntoSingleFile
 
           if (!shouldMerge) {
             if (omitIdActive && isCursorCovered(item.updatedAt || item.savedAt, noIdLatestCursor)) {
@@ -1745,7 +1756,7 @@ export default class OmnivorePlugin extends Plugin {
               // MergeProcessor）。仍记 success 让游标正常前推。
               syncContext.successTracker.recordSuccess(item.id)
             } else {
-              await fileProcessor.process(item, normalizedPath, content, folderName, customFilename, {
+              await fileProcessor.process(standaloneItem, normalizedPath, content, folderName, customFilename, {
                 legacyPath,
               })
             }
@@ -1778,12 +1789,12 @@ export default class OmnivorePlugin extends Plugin {
               if (dualWrite) {
                 try {
                   await this.writeDualStandaloneCopy({
-                    item,
+                    item: standaloneItem,
                     content: renderFor(false),
-                    folderTemplate: folder,
-                    folderDateFormat,
-                    filenameTemplate: filename,
-                    filenameDateFormat,
+                    folderTemplate: profile.folder,
+                    folderDateFormat: profile.folderDateFormat,
+                    filenameTemplate: profile.filename,
+                    filenameDateFormat: profile.filenameDateFormat,
                     mergeTargetPaths: [mergeTarget.path, normalizedPath],
                     fileProcessor,
                     skipByCursor:
@@ -1969,7 +1980,7 @@ export default class OmnivorePlugin extends Plugin {
       this.settings.pendingBurnDeletes = [...pending.values()]
       await this.saveSettings(true)
     }
-    this.startBackgroundLocalization(localizationFiles, manualSync)
+    this.startBackgroundLocalization(localizationFiles, manualSync, burnActive)
   }
 
   /**
@@ -2224,12 +2235,13 @@ export default class OmnivorePlugin extends Plugin {
     )
   }
 
-  private startBackgroundLocalization(files: TFile[], manual: boolean): void {
+  private startBackgroundLocalization(files: TFile[], manual: boolean, allowBurn = true): void {
     if (this.localizationDisposed) return
     this.pendingLocalizationFiles ??= new Set()
     for (const file of files) this.pendingLocalizationFiles.add(file)
     this.backgroundLocalizationRequested = true
     this.backgroundLocalizationManual ||= manual
+    this.backgroundLocalizationBurnRequested ||= allowBurn
     if (this.backgroundLocalizationPromise) return
     this.backgroundLocalizationPromise = Promise.resolve()
       .then(async () => {
@@ -2242,12 +2254,14 @@ export default class OmnivorePlugin extends Plugin {
           this.pendingLocalizationFiles.clear()
           const showProgress = this.backgroundLocalizationManual
           this.backgroundLocalizationManual = false
+          const burnRequested = this.backgroundLocalizationBurnRequested
+          this.backgroundLocalizationBurnRequested = false
           await this.runBackgroundLocalization(
             batch,
             showProgress,
             new SyncNoticeManager(),
           )
-          await this.runBurnDeletePhase([])
+          if (burnRequested) await this.runBurnDeletePhase([])
           this.refreshFileExplorer()
         }
       })
@@ -2255,7 +2269,7 @@ export default class OmnivorePlugin extends Plugin {
       .finally(() => {
         this.backgroundLocalizationPromise = null
         if (this.backgroundLocalizationRequested && !this.localizationDisposed)
-          this.startBackgroundLocalization([], false)
+          this.startBackgroundLocalization([], false, this.backgroundLocalizationBurnRequested)
       })
   }
 
