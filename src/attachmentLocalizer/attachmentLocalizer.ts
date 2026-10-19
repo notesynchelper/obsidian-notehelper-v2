@@ -1,3 +1,8 @@
+import { scanTemplateFileAttachments, replaceTemplateFileAttachment, TemplateFileReference } from '../common/templateFileAttachment'
+import { LocalizationWorkPool, LocalizationRound, drainConcurrentNotes } from '../common/localizationWorkPool'
+import { LocalizationProgress, LocalizationProgressListener } from '../common/localizationProgress'
+import { nextLocalizationAttempt } from '../common/localizationRetryScheduler'
+import { MissingObjectRecords } from '../common/notFoundPolicy'
 /**
  * 附件本地化核心类
  * 负责协调附件检测、下载和链接替换
@@ -6,7 +11,7 @@
  * 📎 [这是一个PPT.ppt](http://www.bijitongbu.site:8091/wecom4/2025/12/xxx) (0.24MB)
  */
 
-import { App, TFile, Vault, normalizePath } from 'obsidian'
+import { App, TFile, Vault, normalizePath, Platform } from 'obsidian'
 import { log, logError } from '../logger'
 import {
   AttachmentEnqueueResult,
@@ -15,8 +20,13 @@ import {
   AttachmentProcessOptions,
   RemoteAttachmentDetectionResult,
 } from './types'
-import { downloadAttachment, isRemoteAttachment } from './attachmentDownloader'
-import { ensureFolderExists } from '../imageLocalizer/imageProcessor'
+import {
+  downloadAttachment,
+  isRemoteAttachment,
+  parseAttachmentSizeBytes,
+} from './attachmentDownloader'
+import { cancelDownloads } from '../common/transfer/downloadResource'
+import { saveContentAddressed } from '../common/vaultStore'
 import { AttachmentLocalizationQueue } from './attachmentQueue'
 import { render } from '../settings/template'
 import { DateTime } from 'luxon'
@@ -27,6 +37,7 @@ import {
   LocalizationResult,
 } from '../common/localizationResult'
 import { unhideNameSegment, unhideVaultPath } from '../util'
+import { PendingLocalizeStore } from '../imageLocalizer/pendingQueueStore'
 
 /**
  * 附件链接匹配正则表达式
@@ -69,16 +80,30 @@ export function extractFileAttachmentFromContent(
 }
 
 export class AttachmentLocalizer {
+  private downloadLifetime = new AbortController()
+  private drainPromise: Promise<LocalizationResult> | null = null
+  private drainTasks = new Set<AttachmentLocalizeTask>()
+  private objectPool = new LocalizationWorkPool(2, 1)
+  private missingBudgetGeneration = new WeakMap<TFile, number>()
+  private progress = new LocalizationProgress()
+  subscribeProgress(listener: LocalizationProgressListener): () => void { return this.progress.subscribe(listener) }
   private app: App
   private vault: Vault
   private queue: AttachmentLocalizationQueue
   private options: AttachmentProcessOptions
+  /** 未完成任务的落盘镜像（须已 load），重启后续传 */
+  private pendingStore: PendingLocalizeStore | null
 
-  constructor(app: App, options: AttachmentProcessOptions) {
+  constructor(
+    app: App,
+    options: AttachmentProcessOptions,
+    pendingStore: PendingLocalizeStore | null = null,
+  ) {
     this.app = app
     this.vault = app.vault
     this.queue = new AttachmentLocalizationQueue()
     this.options = options
+    this.pendingStore = pendingStore
   }
 
   /**
@@ -121,6 +146,12 @@ export class AttachmentLocalizer {
         })
       }
 
+      for (const reference of scanTemplateFileAttachments(content)) {
+        const index = content.indexOf(reference.placeholder)
+        attachments.push({ originalUrl: reference.url, originalText: reference.placeholder,
+          fileName: reference.fileName, startIndex: index, endIndex: index + reference.placeholder.length,
+          template: reference })
+      }
       if (attachments.length > 0) {
         log(`检测到 ${attachments.length} 个远程附件: ${file.path}`)
       }
@@ -138,54 +169,97 @@ export class AttachmentLocalizer {
    */
   async localizeFile(
     fileOrTask: TFile | AttachmentLocalizeTask,
+    progress?: LocalizationProgress,
+    round?: LocalizationRound,
   ): Promise<boolean> {
-    const task: { file: TFile; meta?: LocalizerItemMeta } =
+    const task: { file: TFile; meta?: LocalizerItemMeta; missingAttachments?: MissingObjectRecords; retryAt?: number; connectionOnlyFailure?: boolean } =
       fileOrTask instanceof TFile ? { file: fileOrTask } : fileOrTask
     const { file, meta } = task
+    const generation = this.missingBudgetGeneration.get(file) ?? 0
+    task.retryAt = 0
+    task.connectionOnlyFailure = true
+    const missing: MissingObjectRecords = task.missingAttachments ?? (task.missingAttachments = Object.create(null) as MissingObjectRecords)
     try {
       log(`开始本地化附件: ${file.path}`)
 
       // 检测远程附件
       const detected = await this.detectRemoteAttachments(file)
       if (detected.status === 'read-failed') {
+        task.connectionOnlyFailure = false
         logError(`读取笔记失败，附件保留待重试: ${file.path}`)
         return false
       }
       const { attachments } = detected
+      progress?.add(attachments.length)
       if (attachments.length === 0) {
         log(`没有需要本地化的附件: ${file.path}`)
         return true
       }
 
-      const replacements: { original: string; local: string }[] = []
+      const replacements: { original: string; local: string; template?: TemplateFileReference; expired?: boolean }[] = []
       let allLocalized = true
 
       // 先下载所有附件（耗时操作）
       for (const attachment of attachments) {
+        if (round?.expired || generation !== (this.missingBudgetGeneration.get(file) ?? 0)) { allLocalized = false; task.connectionOnlyFailure = false; break }
         try {
-          const result = await this.processAttachment(attachment, file, meta)
+          const operation = await this.objectPool.run(file, async () => {
+            // A download/save may finish after this drain yields. Carry its
+            // classification with the result instead of mutating an old task.
+            const observations = { ...missing }
+            let retryAt = 0
+            let connectionUnavailable = false
+            const result = await this.processAttachment(attachment, file, meta, observations, (at, connection) => {
+              retryAt = Math.max(retryAt, at); connectionUnavailable = connection === true
+            })
+            return { result, retryAt, connectionUnavailable, missing: observations[attachment.originalUrl] }
+          }, parseAttachmentSizeBytes(attachment.fileSize), {
+            round,
+            key: JSON.stringify([attachment.originalText, attachment.template, meta, this.options.attachmentFolder, this.options.folderDateFormat, generation]),
+            canReuse: value => !value.result?.localPath || this.vault.getAbstractFileByPath(value.result.localPath) instanceof TFile,
+          })
+          // An explicit retry supersedes absence observed by the old request.
+          // It may still finish and save valid bytes, but cannot retire the URL.
+          if (generation !== (this.missingBudgetGeneration.get(file) ?? 0)) { allLocalized = false; task.connectionOnlyFailure = false; break }
+          task.retryAt = Math.max(task.retryAt ?? 0, operation.retryAt)
+          if (operation.missing) missing[attachment.originalUrl] = operation.missing
+          else delete missing[attachment.originalUrl]
+          const result = operation.result
           if (result) {
             replacements.push({
               original: attachment.originalText,
               local: result.replacement,
+              template: attachment.template,
+              expired: result.terminal,
             })
             // terminal（源站 NoSuchKey 真过期）是【永久】失败：再同步多少次也回不来。
             // 它已经在正文里留下 ⚠️已过期 标记，算"能做的都做完了"，绝不能计入
             // 可重试失败 —— 否则任务永远排回队列，每次同步重下一次、再追加一个标记。
-            if (!result.localized && !result.terminal) allLocalized = false
+            if (!result.localized && !result.terminal) { allLocalized = false; task.connectionOnlyFailure = false }
           } else {
             allLocalized = false
+            task.connectionOnlyFailure = task.connectionOnlyFailure && operation.connectionUnavailable
           }
         } catch (error) {
           allLocalized = false
+          task.connectionOnlyFailure = false
           logError(`处理附件失败: ${attachment.originalUrl}`, error)
+        } finally {
+          progress?.complete()
         }
       }
 
       // 使用 vault.process 原子地读取-替换-写入，避免覆盖用户的编辑器修改
       if (replacements.length > 0) {
         await this.vault.process(file, (content) => {
-          for (const { original, local } of replacements) {
+          for (const { original, local, template, expired } of replacements) {
+            if (expired && generation !== (this.missingBudgetGeneration.get(file) ?? 0)) continue
+            if (template) {
+              const before = content
+              content = replaceTemplateFileAttachment(content, template, local)
+              if (expired && content !== before) content += `\n> ⚠️ 附件已过期：[${template.fileName}](${template.url})\n`
+              continue
+            }
             // 幂等护栏：目标文本已在正文里就跳过。同文件里"过期附件 + 瞬态失败附件"
             // 并存时整篇会重排重试，若不判重，过期那条的 ⚠️已过期 会每轮再追加一个。
             if (content.includes(local)) continue
@@ -198,6 +272,7 @@ export class AttachmentLocalizer {
       return allLocalized
     } catch (error) {
       logError(`本地化文件失败: ${file.path}`, error)
+      task.connectionOnlyFailure = false
       return false
     }
   }
@@ -211,8 +286,10 @@ export class AttachmentLocalizer {
   private async processAttachment(
     attachment: AttachmentInfo,
     file: TFile,
-    meta?: LocalizerItemMeta,
-  ): Promise<{ replacement: string; localized: boolean; terminal?: boolean } | null> {
+    meta: LocalizerItemMeta | undefined,
+    missing: MissingObjectRecords,
+    onRetryAfter: (at: number, connectionUnavailable?: boolean) => void,
+  ): Promise<{ replacement: string; localized: boolean; terminal?: boolean; localPath?: string } | null> {
     try {
       const url = attachment.originalUrl
 
@@ -220,40 +297,59 @@ export class AttachmentLocalizer {
       const downloadResult = await downloadAttachment(
         url,
         this.options.maxRetries,
-        this.options.retryDelay
+        this.options.retryDelay,
+        {
+          ...(Platform?.isMobile ? { streamTarget: { vault: this.vault,
+            folder: attachment.template?.folder ?? this.generateFolderPath(file, meta),
+            fileName: this.sanitizeFileName(attachment.fileName), signal: this.downloadLifetime.signal } } : {}),
+          expectedBytes: parseAttachmentSizeBytes(attachment.fileSize),
+          savedAt: attachment.template?.savedAt ?? meta?.savedAt,
+          ...missing[url],
+        },
       )
+
+      onRetryAfter(downloadResult.retryAt ?? 0, downloadResult.connectionUnavailable)
+      if (downloadResult.notReady) {
+        missing[url] = {
+          firstNotFoundAt: missing[url]?.firstNotFoundAt ?? Date.now(),
+          notFoundRounds: (missing[url]?.notFoundRounds ?? 0) + 1,
+        }
+      } else {
+        delete missing[url]
+      }
 
       // 文件已过期
       if (downloadResult.expired) {
         log(`附件已过期，保留原链接并添加标记: ${attachment.fileName}`)
         // 返回带过期标记的文本
         return {
-          replacement: `📎 [${attachment.fileName}](${url}) ⚠️已过期`,
+          replacement: attachment.template ? url : `📎 [${attachment.fileName}](${url}) ⚠️已过期`,
           localized: false,
           // 源站 NoSuchKey = 永久失败，标记完即终态，不进重试队列
           terminal: true,
         }
       }
 
-      if (!downloadResult.success || !downloadResult.data) {
+      if (!downloadResult.success || (!downloadResult.data && !downloadResult.localPath)) {
         logError(`下载失败: ${url}`)
         return null
       }
 
       // 生成存储路径
-      const folderPath = this.generateFolderPath(file, meta)
+      const folderPath = attachment.template?.folder ?? this.generateFolderPath(file, meta)
 
       // 保存附件
-      const localPath = await this.saveAttachmentToVault(
+      const localPath = downloadResult.localPath ?? await this.saveAttachmentToVault(
         folderPath,
         attachment.fileName,
-        downloadResult.data
+        downloadResult.data as ArrayBuffer
       )
 
       // 生成替换后的markdown链接
       return {
-        replacement: this.generateMarkdownLink(attachment, localPath),
+        replacement: attachment.template ? localPath : this.generateMarkdownLink(attachment, localPath),
         localized: true,
+        localPath,
       }
     } catch (error) {
       logError(`处理附件失败: ${attachment.originalUrl}`, error)
@@ -269,27 +365,7 @@ export class AttachmentLocalizer {
     fileName: string,
     data: ArrayBuffer
   ): Promise<string> {
-    // 确保文件夹存在（并发安全：见 imageProcessor.ensureFolderExists 的说明，
-    // 「先查后建」之间可能被另一路抢先建好，抛 already exists 不该让附件失败）
-    const normalizedFolder = normalizePath(folderPath)
-    await ensureFolderExists(this.vault, normalizedFolder)
-
-    // 处理文件名（去除非法字符）
-    const safeFileName = this.sanitizeFileName(fileName)
-    const filePath = normalizePath(`${folderPath}/${safeFileName}`)
-
-    // 检查文件是否已存在
-    const existingFile = this.vault.getAbstractFileByPath(filePath)
-    if (existingFile instanceof TFile) {
-      log(`附件已存在，跳过下载: ${filePath}`)
-      return filePath
-    }
-
-    // 保存文件
-    await this.vault.createBinary(filePath, data)
-    log(`附件保存成功: ${filePath}`)
-
-    return filePath
+    return saveContentAddressed(this.vault, folderPath, this.sanitizeFileName(fileName), data)
   }
 
   /**
@@ -374,24 +450,31 @@ export class AttachmentLocalizer {
    *   （历史兼容 overload）。
    *
    * 同一文件多次 enqueue：已在队列中时，用最新 meta 覆盖已排队任务的 meta
-   * （last-write-wins）；已 processed 时直接早退（自愈逻辑由调用方通过
-   * clearProcessedMark 控制）。
+   * （last-write-wins）；已处理过的路径仍检测新写入的远程附件。
    */
   async enqueueFile(
     file: TFile,
     metaOrSavedAt?: LocalizerItemMeta | string,
+    opts?: { resetNotFoundBudget?: boolean },
   ): Promise<AttachmentEnqueueResult> {
     const meta = normalizeMetaArg(metaOrSavedAt)
     const filePath = file.path
-
-    // 已 processed 早退（保持现有自愈策略：调用方 clearProcessedMark 后才会重新入队）
-    if (this.queue.isProcessed(filePath)) {
-      return 'already-processed'
+    const reset = opts?.resetNotFoundBudget === true
+    if (reset) {
+      this.missingBudgetGeneration.set(file, (this.missingBudgetGeneration.get(file) ?? 0) + 1)
+      const record = this.pendingStore?.get(filePath)
+      if (record) this.pendingStore?.upsert({ ...record, missingAttachments: undefined, nextAttemptAt: undefined })
     }
 
     const existing = this.queue.findTaskByPath(filePath)
     if (existing) {
       if (meta) existing.meta = meta
+      if (reset) {
+        existing.missingAttachments = undefined
+        existing.nextAttemptAt = undefined
+        existing.retryAt = undefined
+      }
+      if (meta || reset) this.persistTask(existing)
       return 'already-queued'
     }
 
@@ -402,13 +485,19 @@ export class AttachmentLocalizer {
       return 'no-remote-attachments'
     }
 
-    this.queue.enqueue({
+    const task: AttachmentLocalizeTask = {
       file,
       attachments,
       createdAt: Date.now(),
-      retryCount: 0,
+      retryCount: this.pendingStore?.get(filePath)?.retryCount ?? 0,
+      lastAttemptAt: this.pendingStore?.get(filePath)?.lastAttemptAt,
+      nextAttemptAt: this.pendingStore?.get(filePath)?.nextAttemptAt,
+      missingAttachments: this.pendingStore?.get(filePath)?.missingAttachments,
       meta,
-    })
+    }
+    this.queue.enqueue(task)
+    // 入队即落盘：大附件一下就是几分钟，中途关掉 Obsidian 也要能续传
+    this.persistTask(task)
     return 'enqueued'
   }
 
@@ -417,12 +506,43 @@ export class AttachmentLocalizer {
    */
   async processQueue(
     onProgress?: (processed: number, total: number) => void,
+    dueOnly = false,
   ): Promise<LocalizationResult> {
-    if (this.queue.isProcessing() || this.queue.isEmpty()) {
-      return emptyLocalizationResult()
+    const shared = this.drainPromise
+    if (shared) {
+      const attempted = this.drainTasks
+      const result = await shared
+      // Only new work crossing the drain boundary needs another pass. Failed
+      // tasks are deliberately retained for a later retry, not retried by waiters.
+      if (!this.queue.listTasks().some(task => !attempted.has(task))) return result
+      const next = await this.processQueue(onProgress, dueOnly)
+      return {
+        total: result.total + next.total,
+        succeeded: result.succeeded + next.succeeded,
+        failed: result.failed + next.failed,
+        failedFiles: [...result.failedFiles, ...next.failedFiles],
+      }
     }
+    if (this.queue.isEmpty()) return emptyLocalizationResult()
+    const attempted = new Set<AttachmentLocalizeTask>()
+    this.drainTasks = attempted
+    const drain = this.drainQueue(attempted, onProgress, dueOnly)
+    this.drainPromise = drain
+    try {
+      return await drain
+    } finally {
+      if (this.drainPromise === drain) this.drainPromise = null
+    }
+  }
 
+  private async drainQueue(
+    attempted: Set<AttachmentLocalizeTask>,
+    onProgress?: (processed: number, total: number) => void,
+    dueOnly = false,
+  ): Promise<LocalizationResult> {
     this.queue.setProcessing(true)
+    const round = new LocalizationRound()
+    this.progress.reset()
     log('开始处理附件本地化队列...')
 
     const total = this.queue.getStats().pending
@@ -433,21 +553,29 @@ export class AttachmentLocalizer {
     const retryTasks: AttachmentLocalizeTask[] = []
 
     try {
-      while (!this.queue.isEmpty()) {
-        const task = this.queue.dequeue()
-        if (!task) break
+      await drainConcurrentNotes(this.queue, async task => {
+        if (dueOnly && (this.pendingStore?.get(task.file.path)?.nextAttemptAt ?? task.nextAttemptAt ?? 0) > Date.now()) { retryTasks.push(task); return }
+        attempted.add(task)
         result.total++
+        this.queue.setActivePath(task.file.path)
 
         try {
-          const ok = await this.localizeFile(task)
+          task.connectionOnlyFailure = false
+          const ok = !round.expired && await this.localizeFile(task, this.progress, round)
           if (ok) {
             this.queue.markAsProcessed(task.file.path)
+            if (!this.queue.findTaskByPath(task.file.path)) this.pendingStore?.remove(task.file.path)
             result.succeeded++
           } else {
             result.failed++
             result.failedFiles.push(task.file.path)
             task.retryCount++
-            retryTasks.push(task)
+            task.lastAttemptAt = Date.now()
+            task.nextAttemptAt = nextLocalizationAttempt(task.file.path, task.retryCount, task.lastAttemptAt, task.retryAt, task.connectionOnlyFailure)
+            if (!this.queue.findTaskByPath(task.file.path)) {
+              retryTasks.push(task)
+              this.persistTask(task)
+            }
             log(`附件任务未完成，保留可重试状态: ${task.file.path}`)
           }
         } catch (error) {
@@ -455,18 +583,86 @@ export class AttachmentLocalizer {
           result.failed++
           result.failedFiles.push(task.file.path)
           task.retryCount++
-          retryTasks.push(task)
+          task.lastAttemptAt = Date.now()
+          task.nextAttemptAt = nextLocalizationAttempt(task.file.path, task.retryCount, task.lastAttemptAt, task.retryAt)
+          if (!this.queue.findTaskByPath(task.file.path)) {
+            retryTasks.push(task)
+            this.persistTask(task)
+          }
         }
 
+        this.queue.finishPath(task.file.path)
         processed++
         onProgress?.(processed, total)
-      }
+      })
     } finally {
+      round.dispose()
       for (const task of retryTasks) this.queue.enqueue(task)
+      this.queue.setActivePath(null)
       this.queue.setProcessing(false)
       log('附件本地化队列处理完成')
     }
     return result
+  }
+
+  /**
+   * 把上个会话落盘的未完成任务重新入队（只入队，由调用方安排 processQueue）。
+   * 须在 vault 索引就绪后调用：resolveFile 返回 null 会被当成笔记已删除、记录清掉。
+   * 不在这里读笔记：localizeFile 处理时会重新检测，读失败也只是留在队列里下次再试；
+   * 已经没有远程附件的会被判成功并清掉记录。
+   *
+   * @returns 重新入队的任务数
+   */
+  resumePending(resolveFile: (filePath: string) => TFile | null, dueOnly = false): number {
+    const store = this.pendingStore
+    if (!store) return 0
+    let resumed = 0
+    for (const rec of store.list()) {
+      if (dueOnly && (rec.nextAttemptAt ?? 0) > Date.now()) continue
+      if (this.queue.isInQueue(rec.filePath)) continue
+      if (this.queue.isActivePath(rec.filePath)) continue
+      const file = resolveFile(rec.filePath)
+      if (!file) {
+        store.remove(rec.filePath)
+        continue
+      }
+      this.queue.unmarkAsProcessed(rec.filePath)
+      this.queue.enqueue({
+        file,
+        attachments: [],
+        createdAt: rec.createdAt,
+        retryCount: rec.retryCount,
+        nextAttemptAt: rec.nextAttemptAt,
+        lastAttemptAt: rec.lastAttemptAt,
+        missingAttachments: rec.missingAttachments,
+        meta: rec.meta,
+      })
+      resumed++
+    }
+    if (resumed > 0) log(`🔁 恢复 ${resumed} 个未完成的附件本地化任务`)
+    return resumed
+  }
+
+  getPendingStore(): PendingLocalizeStore | null {
+    return this.pendingStore
+  }
+
+  /** 笔记改名/移动：续传记录跟着换路径（内存任务持有 TFile 引用，路径自动更新）。 */
+  handleNoteRename(oldPath: string, newPath: string): void {
+    this.pendingStore?.renameFilePath(oldPath, newPath)
+    this.queue.renameFilePath(oldPath, newPath)
+  }
+
+  private persistTask(task: AttachmentLocalizeTask): void {
+    this.pendingStore?.upsert({
+      filePath: task.file.path,
+      meta: task.meta,
+      retryCount: task.retryCount,
+      missingAttachments: task.missingAttachments,
+      nextAttemptAt: task.nextAttemptAt,
+      lastAttemptAt: task.lastAttemptAt,
+      createdAt: task.createdAt,
+    })
   }
 
   /**
@@ -486,6 +682,8 @@ export class AttachmentLocalizer {
   /**
    * 清空队列
    */
+  dispose(): void { this.downloadLifetime.abort(); cancelDownloads(this.vault) }
+
   clearQueue(): void {
     this.queue.clear()
   }

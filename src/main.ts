@@ -1,3 +1,5 @@
+import { prepareTemplateFileAttachment, withTemplateFileAttachment } from './common/templateFileAttachment'
+import { LocalizationRetryScheduler } from './common/localizationRetryScheduler'
 import { Item } from '@omnivore-app/api'
 import { DateTime } from 'luxon'
 import {
@@ -6,7 +8,6 @@ import {
   Notice,
   Platform,
   Plugin,
-  requestUrl,
   TFile,
   TFolder,
 } from 'obsidian'
@@ -39,7 +40,6 @@ import {
   replaceIllegalCharsFile,
   replaceIllegalCharsFolder,
   setOrUpdateHighlightColors,
-  unhideNameSegment,
   unhideVaultPath,
 } from './util'
 import { ConfigMigrationManager } from './configMigration'
@@ -48,7 +48,7 @@ import { clampImageDownloadRetries } from './imageLocalizer/imageDownloader'
 import { ImageProcessOptions } from './imageLocalizer/types'
 import { UrlLocalMap, UrlLocalMapPersister } from './imageLocalizer/urlLocalMap'
 import { PendingLocalizeStore } from './imageLocalizer/pendingQueueStore'
-import { AttachmentLocalizer, AttachmentProcessOptions, isWeComFileMessage, extractFileAttachmentFromContent } from './attachmentLocalizer'
+import { AttachmentLocalizer, AttachmentProcessOptions } from './attachmentLocalizer'
 import { metaFromFrontmatter } from './common/localizerItemMeta'
 import { adjustSyncCursor, advanceSyncCursor, shouldMarkInitialSyncCompleted } from './syncCursorAdjust'
 import { SyncContext } from './sync/SyncContext'
@@ -88,27 +88,19 @@ import {
 } from './common/relocalizeNotice'
 import { collectMarkdownFiles } from './common/relocalizeFolder'
 
-/**
- * 图片本地化续传的延迟启动时间。叠加 initializeNonCriticalFeatures 自身的
- * onLayoutReady + 3s，实际在启动后约 13s+ 才开始续传，绝不阻塞启动主路径。
- */
-const IMAGE_RESUME_DELAY_MS = 10_000
-
-/**
- * 「后续同步重试」的冷却窗口（轻量去抖）：同一条续传失败任务距上次失败尝试不足
- * 此时长时，本次同步不重挂——只挡住密集手动连点同步反复 hammer 未就绪 / 永久失败
- * 的图床；正常同步间隔（分钟级）与重启（走 resumePending，cooldown=0，不受此限制）
- * 都能照常重试，符合「后续再同步时再尝试」的诉求。
- */
-const PENDING_RETRY_COOLDOWN_MS = 60 * 1000
-
 /** 会员状态查询的总预算（从预取开始算）；超时就本轮不提醒，不拖慢「同步完成」提示 */
 const RENEWAL_LOOKUP_TIMEOUT_MS = 3000
 
 export default class OmnivorePlugin extends Plugin {
   settings: OmnivoreSettings
   private refreshTimeout: number | null = null
-  private imageResumeTimeout: number | null = null
+  private localizationRetryScheduler: LocalizationRetryScheduler | null = null
+  private attachmentLocalizerInitPromise: Promise<void> | null = null
+  private backgroundLocalizationPromise: Promise<void> | null = null
+  private backgroundLocalizationRequested = false
+  private backgroundLocalizationManual = false
+  private pendingLocalizationFiles = new Set<TFile>()
+  private localizationDisposed = false
   private firstSyncNoticeTimeout: number | null = null
   private syncing: boolean = false
   // 日记链接模板本次启动是否由旧「双链前缀」推导而来：加载时只改内存，落盘交给 processSettingsCompatibility
@@ -239,6 +231,25 @@ export default class OmnivorePlugin extends Plugin {
 
     // 关键操作：立即加载基本设置
     await this.loadEssentialSettings()
+
+    // A move changes the local address, not the cloud article/version. Keep
+    // the same record identity so an in-flight successful delete can settle
+    // its snapshot without resurrecting the renamed record as new work.
+    this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
+      if (!(file instanceof TFile) && !(file instanceof TFolder)) return
+      let changed = false
+      for (const record of this.settings.pendingBurnDeletes ?? []) {
+        if (record.filePath === oldPath || (file instanceof TFolder && record.filePath.startsWith(`${oldPath}/`))) {
+          record.filePath = file.path + record.filePath.slice(oldPath.length)
+          changed = true
+        }
+      }
+      if (changed) {
+        try { await this.saveSettings(true) }
+        catch (error) { logError('保存改名后的阅后即焚待办失败', error) }
+      }
+    }))
+
 
     // 根据用户设置初始化日志模式
     Logger.setDevMode(this.settings.enableDebugLog)
@@ -472,7 +483,7 @@ export default class OmnivorePlugin extends Plugin {
       }
 
       // 6. 初始化附件本地化器
-      this.initializeAttachmentLocalizer()
+      await this.initializeAttachmentLocalizer()
 
       // 7. 延迟刷新文件浏览器
       this.refreshFileExplorer()
@@ -518,6 +529,14 @@ export default class OmnivorePlugin extends Plugin {
         // 双重检查：load 期间其它 caller 已经完成初始化时直接复用
         if (this.imageLocalizer) return
         this.imageLocalizer = new ImageLocalizer(this.app, options, urlLocalMap, pendingStore)
+        const localizer = this.imageLocalizer
+        this.watchLocalizationRetry(pendingStore, async () => {
+          const files = pendingStore.list().map(r => this.resolveLocalizationFile(r.filePath)).filter((f): f is TFile => !!f)
+          await localizer.enqueuePendingRecords(path => this.resolveLocalizationFile(path), 0, true)
+          await localizer.processQueue(undefined, true)
+          this.startBackgroundLocalization(files, false)
+          this.refreshFileExplorer()
+        }, () => this.settings.imageMode === ImageMode.LOCAL)
 
         // 订阅附件改名事件：改名接力（Paste image rename）或用户手动改名把已本地化图片
         // 从 md5 路径挪走后，同步更新 urlLocalMap，避免下次同步误判「映射失效」重复下载。
@@ -586,55 +605,59 @@ export default class OmnivorePlugin extends Plugin {
    * 调用处已在 onLayoutReady + 3s 的非关键初始化里，叠加后 ≈ 启动 13s+。
    */
   private scheduleImageLocalizationResume(): void {
-    if (this.imageResumeTimeout) return
-    this.imageResumeTimeout = window.setTimeout(() => {
-      this.imageResumeTimeout = null
-      void this.resumePendingImageLocalization()
-    }, IMAGE_RESUME_DELAY_MS)
-  }
-
-  /**
-   * 重启续传：把上个会话未完成的图片本地化任务重新入队处理。
-   * 全程 catch，任何异常只 log，不影响插件其余功能。
-   */
-  private async resumePendingImageLocalization(): Promise<void> {
-    try {
-      if (this.settings.imageMode !== ImageMode.LOCAL) return
-      const localizer = this.imageLocalizer
-      if (!localizer) return
-      const resumed = await localizer.resumePending((filePath) => {
-        const af = this.app.vault.getAbstractFileByPath(filePath)
-        return af instanceof TFile ? af : null
-      })
-      if (resumed > 0) {
-        log(`🔁 图片本地化续传完成：恢复处理 ${resumed} 个文件`)
-        this.refreshFileExplorer()
-      }
-    } catch (error) {
-      logError('图片本地化续传失败:', error)
-    }
+    this.localizationRetryScheduler?.kick('startup')
   }
 
   /**
    * 初始化附件本地化器
    */
-  private initializeAttachmentLocalizer(): void {
+  private async initializeAttachmentLocalizer(): Promise<void> {
     // syncOnStart（约 2s）可能早于非关键初始化（约 3s）创建实例。后者绝不能
     // 用一个新空队列覆盖已经注入 SyncContext、正在收任务的旧实例。
     if (this.attachmentLocalizer) return
-    try {
-      const options: AttachmentProcessOptions = {
-        attachmentFolder: this.settings.attachmentFolder,
-        folderDateFormat: this.settings.folderDateFormat,
-        maxRetries: this.settings.imageDownloadRetries, // 复用图片下载重试次数设置
-        retryDelay: 1000, // 1秒重试延迟
-      }
+    if (this.attachmentLocalizerInitPromise) return this.attachmentLocalizerInitPromise
 
-      this.attachmentLocalizer = new AttachmentLocalizer(this.app, options)
-      log('✅ 附件本地化器初始化完成')
-    } catch (error) {
-      logError('附件本地化器初始化失败:', error)
+    const doInit = async (): Promise<void> => {
+      try {
+        const pendingStore = new PendingLocalizeStore(
+          this.createSidecarJsonPersister('pending-attachment-queue.json'),
+        )
+        await pendingStore.load()
+        if (this.attachmentLocalizer) return
+
+        const options: AttachmentProcessOptions = {
+          attachmentFolder: this.settings.attachmentFolder,
+          folderDateFormat: this.settings.folderDateFormat,
+          maxRetries: this.settings.imageDownloadRetries, // 复用图片下载重试次数设置
+          retryDelay: 1000, // 1秒重试延迟
+        }
+        const localizer = new AttachmentLocalizer(this.app, options, pendingStore)
+        this.attachmentLocalizer = localizer
+        this.watchLocalizationRetry(pendingStore, async () => {
+          const files = pendingStore.list().map(r => this.resolveLocalizationFile(r.filePath)).filter((f): f is TFile => !!f)
+          localizer.resumePending(path => this.resolveLocalizationFile(path), true)
+          await localizer.processQueue(undefined, true)
+          this.startBackgroundLocalization(files, false)
+          this.refreshFileExplorer()
+        })
+        this.registerEvent(
+          this.app.vault.on('rename', (file, oldPath) => {
+            if (file instanceof TFile && file.extension === 'md') {
+              localizer.handleNoteRename(oldPath, file.path)
+            }
+          }),
+        )
+        this.app.workspace.onLayoutReady(() => this.resumePendingAttachmentLocalization(localizer))
+        log('✅ 附件本地化器初始化完成')
+      } catch (error) {
+        logError('附件本地化器初始化失败:', error)
+      }
     }
+
+    this.attachmentLocalizerInitPromise = doInit().finally(() => {
+      this.attachmentLocalizerInitPromise = null
+    })
+    return this.attachmentLocalizerInitPromise
   }
 
   /**
@@ -842,7 +865,7 @@ export default class OmnivorePlugin extends Plugin {
       await this.initializeImageLocalizer()
     }
     if (!this.attachmentLocalizer) {
-      this.initializeAttachmentLocalizer()
+      await this.initializeAttachmentLocalizer()
     }
 
     const noticeManager = new SyncNoticeManager()
@@ -885,7 +908,7 @@ export default class OmnivorePlugin extends Plugin {
 
       if (this.attachmentLocalizer) {
         this.attachmentLocalizer.clearProcessedMark(file.path)
-        const enqueueResult = await this.attachmentLocalizer.enqueueFile(file, meta)
+        const enqueueResult = await this.attachmentLocalizer.enqueueFile(file, meta, { resetNotFoundBudget: true })
         const result = await this.attachmentLocalizer.processQueue()
         if (
           enqueueResult === 'read-failed' ||
@@ -929,7 +952,7 @@ export default class OmnivorePlugin extends Plugin {
       await this.initializeImageLocalizer()
     }
     if (!this.attachmentLocalizer) {
-      this.initializeAttachmentLocalizer()
+      await this.initializeAttachmentLocalizer()
     }
 
     const files = collectMarkdownFiles(folder)
@@ -980,7 +1003,7 @@ export default class OmnivorePlugin extends Plugin {
       if (this.attachmentLocalizer) {
         for (const { file, meta } of entries) {
           this.attachmentLocalizer.clearProcessedMark(file.path)
-          const enqueueResult = await this.attachmentLocalizer.enqueueFile(file, meta)
+          const enqueueResult = await this.attachmentLocalizer.enqueueFile(file, meta, { resetNotFoundBudget: true })
           if (enqueueResult === 'read-failed') failedPaths.add(file.path)
         }
         const result = await this.attachmentLocalizer.processQueue()
@@ -1035,16 +1058,16 @@ export default class OmnivorePlugin extends Plugin {
   }
 
   onunload() {
+    this.localizationDisposed = true
+    this.pendingLocalizationFiles.clear()
     // 清理防抖timeout
     if (this.refreshTimeout) {
       window.clearTimeout(this.refreshTimeout)
       this.refreshTimeout = null
     }
     // 清理续传延迟启动定时器
-    if (this.imageResumeTimeout) {
-      window.clearTimeout(this.imageResumeTimeout)
-      this.imageResumeTimeout = null
-    }
+    this.localizationRetryScheduler?.dispose()
+    this.attachmentLocalizer?.dispose()
     // 清理首次同步说明弹窗的延迟定时器
     if (this.firstSyncNoticeTimeout) {
       window.clearTimeout(this.firstSyncNoticeTimeout)
@@ -1063,6 +1086,7 @@ export default class OmnivorePlugin extends Plugin {
     // 保存即生效：任何改写 settings.language 的路径（设置面板下拉、E2E setSetting 桥）
     // 走完这里后 i18n 立刻读到新语言，再 display() 重渲染就是目标语言。
     this.applyLanguagePreference()
+    this.localizationRetryScheduler?.kick('settings')
 
     const settingsToSave = { ...this.settings }
     delete (settingsToSave as Record<string, unknown>)['config-backup']
@@ -1110,128 +1134,6 @@ export default class OmnivorePlugin extends Plugin {
 
       // register interval for proper cleanup on plugin unload
       this.registerInterval(intervalId)
-    }
-  }
-
-  async downloadFileAsAttachment(item: Item): Promise<string> {
-    // download pdf from the URL to the attachment folder
-    const url = item.url
-    const response = await requestUrl({
-      url,
-      contentType: 'application/pdf',
-    })
-    const folderName = unhideVaultPath(
-      normalizePath(
-        render(
-          item,
-          this.settings.attachmentFolder,
-          this.settings.folderDateFormat,
-          { pathSafe: true },
-        ),
-      ),
-    )
-    const folder = this.app.vault.getAbstractFileByPath(folderName)
-    if (!(folder instanceof TFolder)) {
-      await this.app.vault.createFolder(folderName)
-    }
-    const fileName = normalizePath(`${folderName}/${item.id}.pdf`)
-    const file = this.app.vault.getAbstractFileByPath(fileName)
-    if (!(file instanceof TFile)) {
-      const newFile = await this.app.vault.createBinary(
-        fileName,
-        response.arrayBuffer,
-      )
-      return newFile.path
-    }
-    return file.path
-  }
-
-  /**
-   * 双保险-元数据层：通过 description 识别企微文件消息，提前下载附件并替换 content 中的远程链接
-   * 在同步阶段（写入笔记前）执行，确保写入 vault 的内容已包含本地路径
-   * 即使此层失败，内容层（AttachmentLocalizer 的 📎 正则）仍会在笔记写入后兜底处理
-   */
-  async preDownloadWeComFileAttachment(item: Item): Promise<void> {
-    try {
-      const attachmentInfo = extractFileAttachmentFromContent(item.content)
-      if (!attachmentInfo) {
-        log(`📎 企微文件消息但未找到附件链接: ${item.title}`)
-        return
-      }
-
-      const { fileName, url, fileSize } = attachmentInfo
-      log(`📎 元数据层检测到企微文件附件: ${fileName} (${fileSize || '未知大小'})`)
-
-      // 生成附件存储文件夹路径
-      const folderPath = unhideVaultPath(
-        normalizePath(
-          render(item, this.settings.attachmentFolder, this.settings.folderDateFormat, { pathSafe: true }),
-        ),
-      )
-
-      // 确保文件夹存在
-      const folder = this.app.vault.getAbstractFileByPath(folderPath)
-      if (!(folder instanceof TFolder)) {
-        try {
-          await this.app.vault.createFolder(folderPath)
-        } catch (error: unknown) {
-          const msg = error instanceof Error ? error.message : String(error)
-          if (!msg.includes('already exists')) throw error
-        }
-      }
-
-      // 清理文件名中的非法字符
-      // Obsidian 会隐藏 dot-file；附件被藏起来后，正文 wikilink 点开是空的。
-      const safeFileName = unhideNameSegment(
-        fileName
-          .replace(/[\\/:*?"<>|]/g, '_')
-          .trim()
-          .replace(/\.+$/, ''),
-      )
-      const filePath = normalizePath(`${folderPath}/${safeFileName}`)
-
-      // 检查文件是否已存在（跳过重复下载）
-      const existingFile = this.app.vault.getAbstractFileByPath(filePath)
-      if (existingFile instanceof TFile) {
-        log(`📎 附件已存在，跳过下载: ${filePath}`)
-      } else {
-        // 下载附件
-        const response = await requestUrl({
-          url,
-          method: 'GET',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-        })
-
-        if (response.status !== 200) {
-          logError(`📎 下载附件失败 HTTP ${response.status}: ${url}`)
-          return
-        }
-
-        await this.app.vault.createBinary(filePath, response.arrayBuffer)
-        log(`📎 附件下载成功: ${filePath}`)
-      }
-
-      // 替换 content 中的远程链接为本地链接
-      const originalText = `📎 [${fileName}](${url})`
-      const sizeInfo = fileSize ? ` (${fileSize})` : ''
-      // 构造两种可能的原始文本格式（带大小和不带大小）
-      const originalTextWithSize = `${originalText}${sizeInfo ? ` (${fileSize})` : ''}`
-      const localText = `📎 [[${filePath}|${fileName}]]${sizeInfo}`
-
-      if (item.content) {
-        // 优先替换带大小的完整格式，再替换不带大小的格式
-        if (item.content.includes(originalTextWithSize)) {
-          item.content = item.content.split(originalTextWithSize).join(localText)
-        } else if (item.content.includes(originalText)) {
-          item.content = item.content.split(originalText).join(localText)
-        }
-        log(`📎 已替换远程链接为本地路径: ${filePath}`)
-      }
-    } catch (error) {
-      // 元数据层失败不影响同步，内容层（AttachmentLocalizer）会兜底
-      logError(`📎 元数据层预下载附件失败（内容层将兜底）: ${item.title}`, error)
     }
   }
 
@@ -1591,16 +1493,16 @@ export default class OmnivorePlugin extends Plugin {
     const SYNC_TIMEOUT_MS = 5 * 60 * 1000
     const syncWatchdog = window.setTimeout(() => {
       if (this.syncing) {
-        logError('⚠️ 同步超时（5分钟），强制重置同步状态')
-        this.syncing = false
+        logError('⚠️ 同步拉取仍未结束，保留互斥锁等待请求退出')
         if (manualSync) {
-          new Notice('同步超时，已自动重置。请检查网络后重试。', 5000)
+          new Notice('同步拉取耗时较长，仍在等待网络响应。', 5000)
         }
       }
     }, SYNC_TIMEOUT_MS)
 
     // 阅后即焚：本轮删除候选，留到 finally 之后（移出 watchdog）再执行
     let burnRecordsToDelete: BurnDeleteRecord[] = []
+    let localizationFiles: TFile[] = []
 
     try {
       log(`笔记同步助手开始同步，自: '${syncAt}'`)
@@ -1637,7 +1539,7 @@ export default class OmnivorePlugin extends Plugin {
         await this.initializeImageLocalizer()
       }
       if (!this.attachmentLocalizer) {
-        this.initializeAttachmentLocalizer()
+        await this.initializeAttachmentLocalizer()
       }
 
       // 🆕 创建同步上下文（集中管理状态，自动去重）
@@ -1729,16 +1631,19 @@ export default class OmnivorePlugin extends Plugin {
           const folderName = replaceIllegalCharsFolder(rawFolderPath)
           // log(`🔧 文件夹名称: ${folderName}`)
           await this.ensureFolderExists(folderName)
-          // 双保险-元数据层：通过 description 识别企微文件消息，提前下载附件
-          if (isWeComFileMessage(item)) {
-            await this.preDownloadWeComFileAttachment(item)
-          }
+          // Preserve remote attachment links until the durable localizer has
+          // downloaded and verified them after the note is saved.
 
           // log(`🔧 开始处理文件附件`)
-          const fileAttachment =
-            item.pageType === 'FILE' && includeFileAttachment
-              ? await this.downloadFileAsAttachment(item)
-              : undefined
+          const templateAttachment = item.pageType === 'FILE' && includeFileAttachment
+            ? prepareTemplateFileAttachment({
+              url: item.url,
+              folder: unhideVaultPath(normalizePath(render(item, this.settings.attachmentFolder, this.settings.folderDateFormat, { pathSafe: true }))),
+              fileName: `${replaceIllegalCharsFile(item.id)}.pdf`,
+              savedAt: item.savedAt ?? undefined,
+            }, item.updatedAt ?? item.savedAt ?? '')
+            : undefined
+          const fileAttachment = templateAttachment?.placeholder
           // log(`🔧 文件附件处理完成`)
           // log(`🔧 开始渲染内容`)
 
@@ -1765,7 +1670,7 @@ export default class OmnivorePlugin extends Plugin {
 
           // 同一条 item 在双写模式下要渲染两次（合并副本 merged=true / 独立副本 merged=false），
           // 抽成局部闭包避免两处 14 个位置参数漂移。
-          const renderFor = (merged: boolean): string => renderItemContent(
+          const renderFor = (merged: boolean): string => withTemplateFileAttachment(renderItemContent(
             itemForRender,
             effectiveTemplate,
             highlightOrder,
@@ -1783,7 +1688,7 @@ export default class OmnivorePlugin extends Plugin {
             effectiveWechatMessageTemplate,
             omitIdActive,
             this.settings.chatRecordTimestampTemplate,
-          )
+          ), templateAttachment)
           const content = renderFor(shouldMergeIntoSingleFile)
           // log(`🔧 内容渲染完成`)
           // use the custom filename
@@ -1951,17 +1856,17 @@ export default class OmnivorePlugin extends Plugin {
 
         log(`✅ 同步完成！成功处理 ${successCount} 篇文章，syncAt: ${cursorValue} (maxUpdatedAt=${maxUpdatedAt}+1s), deviceId: ${deviceId}`)
         if (manualSync) {
-          noticeManager.completeSync(successCount, renewalNotice)
+          noticeManager.completeSync(successCount, renewalNotice, this.hasLocalizationWork())
         }
       } else if (debugActive && successCount > 0) {
         log(`🐞 调试模式：成功处理 ${successCount} 篇，本轮不推进游标/不改同步状态`)
         if (manualSync) {
-          noticeManager.completeSync(successCount, renewalNotice)
+          noticeManager.completeSync(successCount, renewalNotice, this.hasLocalizationWork())
         }
       } else {
         log('⚠️ 没有成功处理任何文章，不更新同步时间')
         if (manualSync) {
-          noticeManager.completeSync(0, renewalNotice)
+          noticeManager.completeSync(0, renewalNotice, this.hasLocalizationWork())
         }
       }
 
@@ -1978,76 +1883,7 @@ export default class OmnivorePlugin extends Plugin {
       // 刷新文件浏览器以显示新创建的文件和文件夹
       this.refreshFileExplorer()
 
-      // 图片处理（await 以便跟踪进度）
-      if (this.settings.imageMode === ImageMode.LOCAL && this.imageLocalizer) {
-        log('🖼️ 开始处理图片本地化...')
-        // 后续同步重试：把上次同步 / 上次会话遗留的续传任务（图床源站当时未就绪、
-        // 下载失败等）重新挂回队列，与本次新同步的笔记一起处理，直到源站就绪能下到
-        // 真图并改写链接（见 tests/relayImageNotReady.repro.spec.ts 的 Defect B）。
-        try {
-          await this.imageLocalizer.enqueuePendingRecords((filePath) => {
-            const af = this.app.vault.getAbstractFileByPath(filePath)
-            return af instanceof TFile ? af : null
-          }, PENDING_RETRY_COOLDOWN_MS)
-        } catch (error) {
-          logError('重挂图片续传任务失败:', error)
-        }
-        // 进度分母按「待下载图片总数」（而非文件数）统计：弱网下单篇多图笔记的
-        // 进度条才会随每张图落盘平滑推进，而不是卡 0/1 直到整篇下完才跳满
-        // （见 tests/real-obsidian/cases/weaknet-image-progress.case.js）。
-        const imageTotal = manualSync
-          ? await this.imageLocalizer.countQueuedRemoteImages()
-          : 0
-        if (manualSync && imageTotal > 0) {
-          noticeManager.startPhaseProgress('处理图片', imageTotal)
-        }
-        try {
-          await this.imageLocalizer.processQueue(
-            manualSync && imageTotal > 0
-              ? () => noticeManager.onPhaseItemProcessed()
-              : undefined
-          )
-          log('🖼️ 图片本地化队列处理完成')
-          if (manualSync) noticeManager.completePhase()
-        } catch (error: unknown) {
-          logError('图片本地化处理失败:', error)
-          if (manualSync) noticeManager.failPhase('图片处理失败，文章内容不受影响')
-        }
-      } else if (this.settings.imageMode === ImageMode.DISABLED) {
-        log('🖼️ 开始注释图片...')
-        const processedFilesArray = syncContext.getProcessedFilesArray()
-        if (manualSync) noticeManager.showPhaseNotice('处理图片中...')
-        try {
-          await this.commentOutImages(processedFilesArray)
-          log('🖼️ 图片注释处理完成')
-          if (manualSync) noticeManager.completePhase()
-        } catch (error: unknown) {
-          logError('图片注释处理失败:', error)
-          if (manualSync) noticeManager.failPhase('图片处理失败，文章内容不受影响')
-        }
-      }
-
-      // 附件处理（await 以便跟踪进度）
-      if (this.attachmentLocalizer) {
-        log('📎 开始处理附件本地化...')
-        const attachQueueSize = this.attachmentLocalizer.getQueueStats().pending
-        if (manualSync && attachQueueSize > 0) {
-          noticeManager.startPhaseProgress('处理附件', attachQueueSize)
-        }
-        try {
-          await this.attachmentLocalizer.processQueue(
-            manualSync ? () => noticeManager.onPhaseItemProcessed() : undefined
-          )
-          log('📎 附件本地化队列处理完成')
-          if (manualSync) noticeManager.completePhase()
-        } catch (error: unknown) {
-          logError('附件本地化处理失败:', error)
-          if (manualSync) noticeManager.failPhase('附件处理失败，文章内容不受影响')
-        }
-      }
-
-      // 市场版：图床上传接力 / 图片改名接力（调用其它插件命令的跨插件特性）
-      // 已整体移除 —— 该能力依赖未公开的 app.plugins / app.commands API。
+      localizationFiles = syncContext.getProcessedFilesArray()
 
       // 处理日记链接（同步完成后）
       if (this.settings.enableDiaryLinks && syncContext.diaryLinkProcessor.linkCount > 0) {
@@ -2125,9 +1961,15 @@ export default class OmnivorePlugin extends Plugin {
     // 阅后即焚删除阶段：在 finally 之后跑（watchdog 已清、syncing 已 false），
     // 避免大量删除耗时触发「同步超时」误报。处理本轮候选 + 历史 pending，全程 best-effort。
     // 调试模式 burnActive 恒 false → 不进删除阶段，诊断绝不删云端数据（codex #3）。
-    if (burnActive) {
-      await this.runBurnDeletePhase(burnRecordsToDelete)
+    if (burnActive && burnRecordsToDelete.length) {
+      const pending = new Map((this.settings.pendingBurnDeletes ?? []).map(r => [r.id, r]))
+      for (const record of burnRecordsToDelete) pending.set(record.id, {
+        ...record, reason: 'pending', lastTriedAt: new Date().toISOString(),
+      })
+      this.settings.pendingBurnDeletes = [...pending.values()]
+      await this.saveSettings(true)
     }
+    this.startBackgroundLocalization(localizationFiles, manualSync)
   }
 
   /**
@@ -2143,8 +1985,8 @@ export default class OmnivorePlugin extends Plugin {
       if (!this.settings.burnAfterReading) return
       const nowIso = new Date().toISOString()
       // 合并历史 pending + 本轮候选（同 id 以本轮为准）
-      const byId = new Map<string, PendingBurnDelete>()
-      for (const p of this.settings.pendingBurnDeletes ?? []) byId.set(p.id, p)
+      const queuedAtStart = new Map((this.settings.pendingBurnDeletes ?? []).map(record => [record.id, record]))
+      const byId = new Map<string, PendingBurnDelete>(queuedAtStart)
       for (const r of newRecords) {
         byId.set(r.id, {
           id: r.id,
@@ -2194,7 +2036,13 @@ export default class OmnivorePlugin extends Plugin {
         }
       }
 
-      this.settings.pendingBurnDeletes = stillPending
+      // Another sync may have queued a new article/version while a deletion
+      // was awaiting the server. Reconcile only records owned by this snapshot.
+      const remaining = new Map(stillPending.map(record => [record.id, record]))
+      for (const record of this.settings.pendingBurnDeletes ?? []) {
+        if (queuedAtStart.get(record.id) !== record) remaining.set(record.id, record)
+      }
+      this.settings.pendingBurnDeletes = [...remaining.values()]
       await this.saveSettings(true)
       log(`🔥 阅后即焚：已删云端 ${deleted} 篇，待重试 ${stillPending.length}（删除失败 ${failed}）`)
     } catch (e) {
@@ -2340,5 +2188,157 @@ export default class OmnivorePlugin extends Plugin {
         8000
       )
     }
+  }
+
+  private resolveLocalizationFile(path: string): TFile | null {
+    const file = this.app.vault.getAbstractFileByPath(path)
+    return file instanceof TFile ? file : null
+  }
+
+  private watchLocalizationRetry(store: PendingLocalizeStore, run: () => Promise<unknown>, enabled = () => true): void {
+    if (!this.localizationRetryScheduler) {
+      const scheduler = new LocalizationRetryScheduler()
+      this.localizationRetryScheduler = scheduler
+      if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+        this.registerDomEvent(window, 'online', () => scheduler.kick('online'))
+        this.registerDomEvent(document, 'visibilitychange', () => scheduler.setVisible(document.visibilityState !== 'hidden'))
+        scheduler.setVisible(document.visibilityState !== 'hidden')
+      }
+    }
+    const scheduler = this.localizationRetryScheduler
+    this.app.workspace.onLayoutReady(() => scheduler.watch(store, run, enabled))
+  }
+
+  private resumePendingAttachmentLocalization(_localizer: AttachmentLocalizer): void {
+    this.localizationRetryScheduler?.kick('startup')
+  }
+
+  private hasLocalizationWork(): boolean {
+    const images = this.imageLocalizer?.getQueueStats()
+    const attachments = this.attachmentLocalizer?.getQueueStats()
+    return !!(
+      images?.queueSize ||
+      images?.isProcessing ||
+      attachments?.pending ||
+      this.backgroundLocalizationPromise
+    )
+  }
+
+  private startBackgroundLocalization(files: TFile[], manual: boolean): void {
+    if (this.localizationDisposed) return
+    this.pendingLocalizationFiles ??= new Set()
+    for (const file of files) this.pendingLocalizationFiles.add(file)
+    this.backgroundLocalizationRequested = true
+    this.backgroundLocalizationManual ||= manual
+    if (this.backgroundLocalizationPromise) return
+    this.backgroundLocalizationPromise = Promise.resolve()
+      .then(async () => {
+        while (
+          this.backgroundLocalizationRequested &&
+          !this.localizationDisposed
+        ) {
+          this.backgroundLocalizationRequested = false
+          const batch = [...this.pendingLocalizationFiles]
+          this.pendingLocalizationFiles.clear()
+          const showProgress = this.backgroundLocalizationManual
+          this.backgroundLocalizationManual = false
+          await this.runBackgroundLocalization(
+            batch,
+            showProgress,
+            new SyncNoticeManager(),
+          )
+          await this.runBurnDeletePhase([])
+          this.refreshFileExplorer()
+        }
+      })
+      .catch((error) => logError('后台本地化失败，保留续传任务', error))
+      .finally(() => {
+        this.backgroundLocalizationPromise = null
+        if (this.backgroundLocalizationRequested && !this.localizationDisposed)
+          this.startBackgroundLocalization([], false)
+      })
+  }
+
+  private async runBackgroundLocalization(
+    relayFiles: TFile[],
+    manualSync: boolean,
+    noticeManager: SyncNoticeManager,
+  ): Promise<void> {
+    const attachmentNotice = new SyncNoticeManager()
+    await Promise.all([
+      (async () => {
+        // 图片处理（await 以便跟踪进度）
+        if (
+          this.settings.imageMode === ImageMode.LOCAL &&
+          this.imageLocalizer
+        ) {
+          log('🖼️ 开始处理图片本地化...')
+          // 后续同步重试：把上次同步 / 上次会话遗留的续传任务（图床源站当时未就绪、
+          // 下载失败等）重新挂回队列，与本次新同步的笔记一起处理，直到源站就绪能下到
+          // 真图并改写链接（见 tests/relayImageNotReady.repro.spec.ts 的 Defect B）。
+          try {
+            await this.imageLocalizer.enqueuePendingRecords(
+              (filePath) => {
+                const af = this.app.vault.getAbstractFileByPath(filePath)
+                return af instanceof TFile ? af : null
+              },
+              0,
+              true,
+            )
+          } catch (error) {
+            logError('重挂图片续传任务失败:', error)
+          }
+          const unsubscribe = manualSync
+            ? this.imageLocalizer.subscribeProgress(({ processed, total }) =>
+                noticeManager.updatePhaseProgress('处理图片', processed, total))
+            : () => {}
+          try {
+            await this.imageLocalizer.processQueue(undefined, true)
+            log('🖼️ 图片本地化队列处理完成')
+            if (manualSync) noticeManager.completePhase()
+          } catch (error: unknown) {
+            logError('图片本地化处理失败:', error)
+            if (manualSync)
+              noticeManager.failPhase('图片处理失败，文章内容不受影响')
+          } finally {
+            unsubscribe()
+          }
+        } else if (this.settings.imageMode === ImageMode.DISABLED) {
+          log('🖼️ 开始注释图片...')
+          const processedFilesArray = relayFiles
+          if (manualSync) noticeManager.showPhaseNotice('处理图片中...')
+          try {
+            await this.commentOutImages(processedFilesArray)
+            log('🖼️ 图片注释处理完成')
+            if (manualSync) noticeManager.completePhase()
+          } catch (error: unknown) {
+            logError('图片注释处理失败:', error)
+            if (manualSync)
+              noticeManager.failPhase('图片处理失败，文章内容不受影响')
+          }
+        }
+      })(),
+      (async () => {
+        // 附件处理（await 以便跟踪进度）
+        if (this.attachmentLocalizer) {
+          log('📎 开始处理附件本地化...')
+          const unsubscribe = manualSync
+            ? this.attachmentLocalizer.subscribeProgress(({ processed, total }) =>
+                attachmentNotice.updatePhaseProgress('处理附件', processed, total))
+            : () => {}
+          try {
+            await this.attachmentLocalizer.processQueue(undefined, true)
+            log('📎 附件本地化队列处理完成')
+            if (manualSync) attachmentNotice.completePhase()
+          } catch (error: unknown) {
+            logError('附件本地化处理失败:', error)
+            if (manualSync)
+              attachmentNotice.failPhase('附件处理失败，文章内容不受影响')
+          } finally {
+            unsubscribe()
+          }
+        }
+      })(),
+    ])
   }
 }

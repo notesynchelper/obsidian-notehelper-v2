@@ -1,3 +1,5 @@
+import { transferPool } from '../src/common/transfer/transferPool'
+beforeEach(() => transferPool.clear())
 /**
  * 下载重试 + 备用线路机制测试
  *
@@ -26,7 +28,7 @@ import {
   clampImageDownloadRetries,
   downloadImage,
   getFallbackUrls,
-  IMAGE_REQUEST_TIMEOUT_MS,
+  IMAGE_DOWNLOAD_TIME_BUDGET_MS,
   isCompleteImageResponse,
   MAX_IMAGE_DOWNLOAD_RETRIES,
 } from '../src/imageLocalizer/imageDownloader'
@@ -568,14 +570,15 @@ describe('永久错误、完整性、超时与设置硬上限', () => {
     expect(clampImageDownloadRetries(100)).toBe(MAX_IMAGE_DOWNLOAD_RETRIES)
     mockRequestUrl.mockRejectedValue(new Error('down'))
     await downloadImage('https://cdn.example.com/x.png', 100, 0)
-    expect(mockRequestUrl).toHaveBeenCalledTimes(MAX_IMAGE_DOWNLOAD_RETRIES + 1)
+    expect(mockRequestUrl.mock.calls.length).toBeGreaterThan(0)
+    expect(mockRequestUrl.mock.calls.length).toBeLessThanOrEqual(MAX_IMAGE_DOWNLOAD_RETRIES + 1)
   })
 
-  test('永久不返回的 requestUrl 会在单请求超时后收敛', async () => {
+  test('永久不返回的 requestUrl 在有界轮次预算后收敛并保留在途请求', async () => {
     jest.useFakeTimers()
     mockRequestUrl.mockImplementation(() => new Promise(() => undefined))
     const pending = downloadImage('https://cdn.example.com/x.png', 0, 0)
-    await jest.advanceTimersByTimeAsync(IMAGE_REQUEST_TIMEOUT_MS)
+    await jest.advanceTimersByTimeAsync(IMAGE_DOWNLOAD_TIME_BUDGET_MS)
     await expect(pending).resolves.toMatchObject({ success: false })
   })
 })

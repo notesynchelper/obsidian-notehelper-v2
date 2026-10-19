@@ -1,3 +1,5 @@
+import { transferPool } from '../src/common/transfer/transferPool'
+beforeEach(() => transferPool.clear())
 /**
  * 死图（404/410）有界预算 —— 2026-08-26 doc-bridge R2 生命周期事故的客户端收敛。
  *
@@ -251,7 +253,7 @@ describe('死图有界预算（drainQueue）', () => {
     expect(outcome.hasNotFound).toBe(false)
   })
 
-  test(`连续 ${NOT_FOUND_ROUND_BUDGET} 轮全是死图 → 退休：前几轮保留续传，最后一轮清除`, async () => {
+  test(`连续 ${NOT_FOUND_ROUND_BUDGET} 轮 + 2h 全是死图 → 退休：前几轮保留续传，最后一轮清除`, async () => {
     mockRequestUrl.mockResolvedValue(statusResponse(404))
     const { localizer, store, written } = build()
     const file = makeFile()
@@ -269,7 +271,8 @@ describe('死图有界预算（drainQueue）', () => {
       expect(store.get(NOTE)).toMatchObject({ notFoundRounds: round })
     }
 
-    // 最后一轮：预算耗尽 → 退休
+    store.upsert({ ...store.get(NOTE)!, firstNotFoundAt: Date.now() - 2 * 3600_000 })
+    // 最后一轮：轮次及墙钟预算耗尽 → 退休
     const result = await runRound(localizer, file)
     expect(store.get(NOTE)).toBeUndefined()
     // 退休 ≠ 谎报成功：仍如实计入 failed，右键入口的提示不会说假话
@@ -286,6 +289,7 @@ describe('死图有界预算（drainQueue）', () => {
 
     await localizer.enqueueFile(file)
     await localizer.processQueue()
+    store.upsert({ ...store.get(NOTE)!, firstNotFoundAt: Date.now() - 2 * 3600_000 })
     for (let round = 2; round <= NOT_FOUND_ROUND_BUDGET; round++) {
       await runRound(localizer, file)
     }
@@ -305,6 +309,7 @@ describe('死图有界预算（drainQueue）', () => {
 
     await localizer.enqueueFile(file)
     await localizer.processQueue()
+    store.upsert({ ...store.get(NOTE)!, firstNotFoundAt: Date.now() - 2 * 3600_000 })
     for (let round = 2; round <= NOT_FOUND_ROUND_BUDGET; round++) {
       await runRound(localizer, file)
     }
@@ -393,6 +398,7 @@ describe('死图有界预算（drainQueue）', () => {
       localizer.clearProcessedMark(NOTE)
       await localizer.enqueueFile(file)
       await localizer.processQueue()
+      if (round === 1) store.upsert({ ...store.get(NOTE)!, firstNotFoundAt: Date.now() - 2 * 3600_000 })
     }
 
     expect(store.get(NOTE)).toBeUndefined()
@@ -418,6 +424,26 @@ describe('死图有界预算（drainQueue）', () => {
 
     expect(store.get(NOTE)).toBeDefined()
     expect(store.get(NOTE)?.notFoundRounds).toBe(1)
+  })
+
+  test('在途请求期间右键重试清零预算，旧轮次不得退休新预算', async () => {
+    const { localizer, store } = build()
+    const file = makeFile()
+    store.upsert({ filePath: NOTE, createdAt: Date.now() - 10800000, retryCount: 5,
+      notFoundRounds: 5, firstNotFoundAt: Date.now() - 10800000 })
+    let release!: (value: any) => void
+    mockRequestUrl.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    await localizer.enqueueFile(file)
+    const first = localizer.processQueue()
+    while (!release) await Promise.resolve()
+    await localizer.enqueueFile(file, undefined, { resetNotFoundBudget: true })
+    const reset = store.get(NOTE)
+    release(statusResponse(404))
+    await first
+    expect(reset?.notFoundRounds).toBe(0)
+    expect(reset?.firstNotFoundAt).toBeUndefined()
+    expect(store.get(NOTE)?.notFoundRounds).toBe(1)
+    expect(store.get(NOTE)?.firstNotFoundAt).toBeGreaterThan(Date.now() - 10000)
   })
 
   test('drain 之后直接调用 public localizeFile：死图名单不许沿用', async () => {

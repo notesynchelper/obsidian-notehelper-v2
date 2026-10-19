@@ -1,3 +1,4 @@
+import { MissingObjectRecords } from '../common/notFoundPolicy'
 /**
  * PendingLocalizeStore - 图片本地化待办任务的持久化存储（重启续传用）
  *
@@ -23,6 +24,7 @@ export interface PendingTaskRecord {
   filePath: string
   /** 笔记的 Item 上下文，决定附件目录模板变量；可缺省 */
   meta?: LocalizerItemMeta
+  missingAttachments?: MissingObjectRecords
   /** 跨重启保留的重试次数累加（诊断用，不再作丢弃闸门） */
   retryCount: number
   /**
@@ -31,6 +33,10 @@ export interface PendingTaskRecord {
    * 任一轮出现瞬态失败即清零 —— 瞬态失败永远不消耗这个预算。缺省视作 0。
    */
   notFoundRounds?: number
+  /** Wall clock of the first consecutive authoritative missing response. */
+  firstNotFoundAt?: number
+  /** Persisted retry deadline; absent in legacy records. */
+  nextAttemptAt?: number
   /** 任务首次创建时间（毫秒时间戳） */
   createdAt: number
   /**
@@ -54,6 +60,7 @@ export const MAX_PENDING_TASKS = 500
 
 export class PendingLocalizeStore {
   // filePath → record；Map 保持插入顺序，FIFO 淘汰直接取首个 key
+  private listeners = new Set<() => void>()
   private records: Map<string, PendingTaskRecord> = new Map()
   private persister?: PendingStorePersister
   private dirty = false
@@ -90,6 +97,11 @@ export class PendingLocalizeStore {
     }
   }
 
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
   get(filePath: string): PendingTaskRecord | undefined {
     return this.records.get(filePath)
   }
@@ -109,11 +121,10 @@ export class PendingLocalizeStore {
   upsert(record: PendingTaskRecord): void {
     if (!record.filePath) return
     if (!this.records.has(record.filePath) && this.records.size >= MAX_PENDING_TASKS) {
-      const first = this.records.keys().next()
-      if (!first.done) {
-        const oldest = first.value
-        this.records.delete(oldest)
-        log(`⚠️ 图片本地化续传队列已达上限 ${MAX_PENDING_TASKS}，淘汰最旧任务: ${oldest}`)
+      const oldest = this.records.keys().next()
+      if (!oldest.done) {
+        this.records.delete(oldest.value)
+        log(`⚠️ 图片本地化续传队列已达上限 ${MAX_PENDING_TASKS}，淘汰最旧任务: ${oldest.value}`)
       }
     }
     this.records.set(record.filePath, record)
@@ -146,6 +157,8 @@ export class PendingLocalizeStore {
         target?.notFoundRounds ?? 0,
         record.notFoundRounds ?? 0,
       ),
+      firstNotFoundAt: record.firstNotFoundAt ?? target?.firstNotFoundAt,
+      nextAttemptAt: Math.max(target?.nextAttemptAt ?? 0, record.nextAttemptAt ?? 0) || undefined,
       createdAt: Math.min(target?.createdAt ?? record.createdAt, record.createdAt),
       lastAttemptAt: Math.max(target?.lastAttemptAt ?? 0, record.lastAttemptAt ?? 0) || undefined,
     })
@@ -183,6 +196,9 @@ export class PendingLocalizeStore {
   }
 
   private scheduleSave(): void {
+    for (const listener of this.listeners) {
+      try { listener() } catch (error) { logError('本地化待办订阅失败', error) }
+    }
     if (!this.persister) return
     this.dirty = true
     if (this.saveTimer) return
@@ -239,5 +255,25 @@ function sanitizeRecord(item: unknown): PendingTaskRecord | null {
     notFoundRounds,
     createdAt,
     lastAttemptAt,
+    firstNotFoundAt: finiteTimestamp(obj.firstNotFoundAt),
+    nextAttemptAt: finiteTimestamp(obj.nextAttemptAt),
+    missingAttachments: sanitizeMissing(obj.missingAttachments),
   }
+}
+
+function finiteTimestamp(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function sanitizeMissing(value: unknown): MissingObjectRecords | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const records = Object.create(null) as MissingObjectRecords
+  for (const [url, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const record = raw as Record<string, unknown>
+    const first = finiteTimestamp(record.firstNotFoundAt)
+    const rounds = finiteTimestamp(record.notFoundRounds)
+    if (first !== undefined && rounds !== undefined) records[url] = { firstNotFoundAt: first, notFoundRounds: Math.floor(rounds) }
+  }
+  return records
 }

@@ -1,5 +1,6 @@
 import { Item, ItemFormat, Omnivore } from '@omnivore-app/api'
 import { requestUrl } from 'obsidian'
+import { downloadResource } from './common/transfer/downloadResource'
 import { getContentApiUrl } from './settings/local-test'
 import { LOCAL_TEST_CONFIG } from './settings/local-test'
 import { log, logError } from './logger'
@@ -221,14 +222,6 @@ const apiPathFallback = async <T>(
   throw lastError == null ? new Error('所有入口均不可达') : toError(lastError)
 }
 
-// 工具函数
-const sleep = (ms: number): Promise<void> =>
-  new Promise(resolve => window.setTimeout(resolve, ms))
-
-// 请求错误类型
-interface RequestError extends Error {
-  status?: number
-}
 
 export enum HighlightColors {
   Yellow = 'yellow',
@@ -463,22 +456,8 @@ const getContent = async (
 }
 
 const downloadFromUrl = async (url: string): Promise<string> => {
-  try {
-    // polling until download is ready or failed
-    const response = await requestUrl({
-      url,
-    })
-    return response.text
-  } catch (error) {
-    // retry after 1 second if download returns 404
-    const reqError = error as RequestError
-    if (reqError.status === 404) {
-      await sleep(1000)
-      return downloadFromUrl(url)
-    }
-
-    throw error
-  }
+  const response = await downloadResource({ url, requireOk: true, pollNotFoundUntil: Date.now() + 600000 })
+  return response.text
 }
 
 const fetchContentForItems = async (

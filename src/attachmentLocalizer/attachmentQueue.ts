@@ -9,14 +9,29 @@ export class AttachmentLocalizationQueue {
   private queue: AttachmentLocalizeTask[] = []
   private processedPaths: Set<string> = new Set()
   private isProcessingFlag = false
+  private activePaths = new Set<string>()
+  private listeners = new Set<() => void>()
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  isActivePath(path: string): boolean { return this.activePaths.has(path) }
+  finishPath(path: string): void { this.activePaths.delete(path) }
+  renameFilePath(oldPath: string, newPath: string): void {
+    if (this.activePaths.delete(oldPath)) this.activePaths.add(newPath)
+    if (this.processedPaths.delete(oldPath)) this.processedPaths.add(newPath)
+  }
 
   /**
    * 添加任务到队列
    */
   enqueue(task: AttachmentLocalizeTask): void {
     // 避免重复添加
-    if (!this.isInQueue(task.file.path) && !this.isProcessed(task.file.path)) {
+    if (!this.isInQueue(task.file.path)) {
       this.queue.push(task)
+      for (const listener of this.listeners) listener()
     }
   }
 
@@ -24,7 +39,8 @@ export class AttachmentLocalizationQueue {
    * 从队列取出任务
    */
   dequeue(): AttachmentLocalizeTask | undefined {
-    return this.queue.shift()
+    const index = this.queue.findIndex(task => !this.isActivePath(task.file.path))
+    return index < 0 ? undefined : this.queue.splice(index, 1)[0]
   }
 
   /**
@@ -39,6 +55,21 @@ export class AttachmentLocalizationQueue {
    */
   findTaskByPath(filePath: string): AttachmentLocalizeTask | undefined {
     return this.queue.find((task) => task.file.path === filePath)
+  }
+
+  /** 已出队、正在处理的文件路径 */
+  getActivePath(): string | null {
+    for (const path of this.activePaths) return path
+    return null
+  }
+
+  setActivePath(path: string | null): void {
+    if (path === null) this.activePaths.clear()
+    else this.activePaths.add(path)
+  }
+
+  listTasks(): readonly AttachmentLocalizeTask[] {
+    return this.queue
   }
 
   /**
@@ -100,5 +131,6 @@ export class AttachmentLocalizationQueue {
     this.queue = []
     this.processedPaths.clear()
     this.isProcessingFlag = false
+    this.activePaths.clear()
   }
 }

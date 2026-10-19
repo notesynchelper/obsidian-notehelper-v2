@@ -172,6 +172,7 @@ describe('relocalizeFolder 批量编排', () => {
           author: `author:${value.path}`,
           siteName: `source:${value.path}`,
         }),
+        { resetNotFoundBudget: true },
       )
     }
 

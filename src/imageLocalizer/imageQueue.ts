@@ -16,7 +16,16 @@ export class ImageLocalizationQueue {
   // 正在处理中的任务路径（已被 dequeue 移出 queue[]，但尚未完成）。
   // enqueue 去重必须把它算进去，否则 resume/sync 在处理窗口内重复入队
   // 同一文件会造成顺序重复本地化。
-  private activePath: string | null = null
+  private activePaths = new Set<string>()
+  private listeners = new Set<() => void>()
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  isActivePath(path: string): boolean { return this.activePaths.has(path) }
+  finishPath(path: string): void { this.activePaths.delete(path) }
 
   /**
    * 添加任务到队列
@@ -32,6 +41,7 @@ export class ImageLocalizationQueue {
     }
 
     this.queue.push(task)
+      for (const listener of this.listeners) listener()
     log(`任务入队: ${filePath} (队列长度: ${this.queue.length})`)
   }
 
@@ -40,7 +50,8 @@ export class ImageLocalizationQueue {
    * @returns 本地化任务，如果队列为空则返回 undefined
    */
   dequeue(): LocalizeTask | undefined {
-    return this.queue.shift()
+    const index = this.queue.findIndex(task => !this.isActivePath(task.file.path))
+    return index < 0 ? undefined : this.queue.splice(index, 1)[0]
   }
 
   /**
@@ -137,20 +148,22 @@ export class ImageLocalizationQueue {
    * 任务结束——无论成功失败——后清除）
    */
   setActivePath(filePath: string | null): void {
-    this.activePath = filePath
+    if (filePath === null) this.activePaths.clear()
+    else this.activePaths.add(filePath)
   }
 
   /**
    * 当前正在处理中的任务路径；空闲时为 null
    */
   getActivePath(): string | null {
-    return this.activePath
+    for (const path of this.activePaths) return path
+    return null
   }
 
   /** 笔记改名时同步队列内部按路径保存的状态；task.file.path 由 Obsidian 自身更新。 */
   renameFilePath(oldPath: string, newPath: string): void {
     if (!oldPath || !newPath || oldPath === newPath) return
-    if (this.activePath === oldPath) this.activePath = newPath
+    if (this.activePaths.delete(oldPath)) this.activePaths.add(newPath)
     if (this.processedFiles.delete(oldPath)) this.processedFiles.add(newPath)
   }
 

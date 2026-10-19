@@ -38,7 +38,14 @@ jest.mock('../src/logger', () => ({
 }))
 
 import { requestUrl } from 'obsidian'
-import { downloadAttachment } from '../src/attachmentLocalizer/attachmentDownloader'
+import { downloadAttachment as downloadAttachmentActual } from '../src/attachmentLocalizer/attachmentDownloader'
+
+// Routing/late-response fixtures represent mature objects. New and unknown
+// objects have separate not-ready regression coverage.
+const downloadAttachment: typeof downloadAttachmentActual = (url, retries, delay, options = {}) =>
+  downloadAttachmentActual(url, retries, delay, {
+    savedAt: new Date(Date.now() - 4 * 86400_000).toISOString(), ...options,
+  })
 
 const mockRequestUrl = requestUrl as jest.Mock
 

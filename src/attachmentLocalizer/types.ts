@@ -1,3 +1,5 @@
+import { TemplateFileReference } from '../common/templateFileAttachment'
+import { MissingObjectRecords } from '../common/notFoundPolicy'
 /**
  * 附件本地化相关的类型定义
  */
@@ -10,6 +12,7 @@ import { LocalizerItemMeta } from '../common/localizerItemMeta'
  * 格式: 📎 [文件名.ext](URL) (大小)
  */
 export interface AttachmentInfo {
+  template?: TemplateFileReference
   /** 原始URL */
   originalUrl: string
   /** 附件在笔记中的原始文本（包含markdown语法和表情符号） */
@@ -28,6 +31,7 @@ export interface AttachmentInfo {
  * 附件本地化任务
  */
 export interface AttachmentLocalizeTask {
+  connectionOnlyFailure?: boolean
   /** 笔记文件 */
   file: TFile
   /** 需要处理的附件列表 */
@@ -41,12 +45,18 @@ export interface AttachmentLocalizeTask {
    * siteName/author/originalUrl/publishedAt 等模板变量。
    */
   meta?: LocalizerItemMeta
+  missingAttachments?: MissingObjectRecords
+  retryAt?: number
+  nextAttemptAt?: number
+  lastAttemptAt?: number
 }
 
 /**
  * 附件下载结果
  */
 export interface AttachmentDownloadResult {
+  connectionUnavailable?: boolean
+  retryAt?: number
   /** 是否成功 */
   success: boolean
   /** 本地文件路径 */
@@ -57,6 +67,7 @@ export interface AttachmentDownloadResult {
   data?: ArrayBuffer
   /** 是否文件已过期（NoSuchKey错误） */
   expired?: boolean
+  notReady?: boolean
 }
 
 /**

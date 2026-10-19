@@ -1,9 +1,10 @@
+import { hasCompleteLength } from '../common/transferIntegrity'
 /**
  * 图片下载器
  * 负责从网络下载图片，支持重试机制和备用线路
  */
 
-import { requestUrl } from 'obsidian'
+import { transferPool, TransferFlight, TransferSession, isConnectionUnavailable } from '../common/transfer/transferPool'
 import { log, logError } from '../logger'
 import { DownloadResult } from './types'
 import { getFallbackUrls, isOriginHost } from '../common/imageRelay'
@@ -13,11 +14,11 @@ export { getFallbackUrls }
 /** 设置与运行时共同使用的重试硬上限（首次 + 5 次重试 = 最多 6 次常规机会）。 */
 export const MAX_IMAGE_DOWNLOAD_RETRIES = 5
 /** Chromium/Capacitor 的 requestUrl 不支持 abort，只能在调用外层做超时竞争。 */
-export const IMAGE_REQUEST_TIMEOUT_MS = 5_000
+export const IMAGE_REQUEST_TIMEOUT_MS = 25_000
 /** 指数退避封顶，避免高 retry 配置把单篇笔记卡住数天。 */
 export const IMAGE_RETRY_DELAY_CAP_MS = 2_000
-/** 单张图片的墙钟预算；底层迟到响应只会被 Promise.race 丢弃，不参与保存。 */
-export const IMAGE_DOWNLOAD_TIME_BUDGET_MS = 25_000
+/** 单轮图片墙钟预算；超时后底层请求仍由共享传输池持有，后续轮次可继续复用。 */
+export const IMAGE_DOWNLOAD_TIME_BUDGET_MS = 90_000
 
 /** 对 data.json 老值、UI 输入和调用方参数做同一套防御性归一化。 */
 export function clampImageDownloadRetries(value: number): number {
@@ -122,13 +123,8 @@ export function isCompleteImageResponse(
   data: ArrayBuffer | undefined,
   headers: Record<string, string> | undefined = undefined,
 ): boolean {
-  if (!data || data.byteLength === 0) return false
+  if (!data || !hasCompleteLength(data, headers)) return false
   const bytes = new Uint8Array(data)
-
-  const contentLength = getHeaderCI(headers, 'content-length').trim()
-  if (/^\d+$/.test(contentLength) && Number(contentLength) !== bytes.byteLength) {
-    return false
-  }
 
   // PNG：末尾 64 字节内须有长度 0 的 IEND + 固定 CRC。
   if (
@@ -300,45 +296,13 @@ function isOriginUrl(url: string): boolean {
 }
 
 /**
- * requestUrl 本身无 timeout/abort。Promise.race 超时后不再把底层响应交给调用方；
- * race 已给原 promise 安装 resolve/reject handler，迟到结果不会触发保存或未处理拒绝。
- */
-async function requestImage(url: string, timeoutMs: number) {
-  let timeoutId: number | null = null
-  const requestPromise = requestUrl({
-    url,
-    method: 'GET',
-    throw: false,
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    },
-  })
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => {
-      reject(new ImageDownloadError(`请求超时（${timeoutMs}ms）`))
-    }, timeoutMs)
-  })
-  try {
-    return await Promise.race([requestPromise, timeoutPromise])
-  } finally {
-    if (timeoutId !== null) window.clearTimeout(timeoutId)
-  }
-}
-
-/**
  * 单次下载并分类。重试、线路轮转和总时间预算由 downloadImage 统一管理。
  */
-async function attemptDownloadOnce(
-  url: string,
-  timeoutMs: number,
-  attemptNumber: number,
-  maxAttempts: number,
-): Promise<AttemptOutcome> {
+function evaluateImageFlight(flight: TransferFlight): AttemptOutcome {
+  const url = flight.url
   try {
-    log(`尝试下载图片 (${attemptNumber}/${maxAttempts}): ${url}`)
-    const response = await requestImage(url, timeoutMs)
-
+    if (flight.error) throw flight.error
+    const response = flight.response!
     if (response.status !== 200) {
       const message = `Request failed, status ${response.status}`
       throw new ImageDownloadError(
@@ -359,6 +323,7 @@ async function attemptDownloadOnce(
       )
     }
 
+    transferPool.recordSuccess(flight)
     log(`图片下载成功: ${url}`)
     return {
       kind: 'success',
@@ -366,10 +331,10 @@ async function attemptDownloadOnce(
     }
   } catch (error: unknown) {
     const normalized = error instanceof Error ? error : new Error(String(error))
-    logError(`下载图片失败 (${attemptNumber}/${maxAttempts}): ${url}`, normalized)
+    logError(`下载图片失败: ${url}`, normalized)
     return {
       kind: errorKind(normalized),
-      result: { success: false, error: normalized.message || '下载失败' },
+      result: { success: false, error: normalized.message || '下载失败', retryAt: transferPool.retryAt(url), connectionUnavailable: isConnectionUnavailable(normalized) },
     }
   }
 }
@@ -391,14 +356,31 @@ async function attemptDownloadOnce(
  * @param retryDelay 重试延迟（毫秒）
  * @returns 下载结果
  */
+export interface ImageDownloadOptions { expectedBytes?: number }
+
+export function imageRequestTimeoutMs(expectedBytes?: number, url = 'https://unknown.invalid/image'): number {
+  return transferPool.imageTimeout(url, expectedBytes)
+}
+
 export async function downloadImage(
   url: string,
-  maxRetries: number = 3,
-  retryDelay: number = 1000
+  maxRetries = 3,
+  retryDelay = 1000,
+  options: ImageDownloadOptions = {},
+): Promise<DownloadResult> {
+  const session = new TransferSession(evaluateImageFlight, (outcome, route) =>
+    outcome.kind === 'success' || (outcome.kind === 'not-found' && isOriginUrl(route)))
+  try { return await downloadImageRound(url, maxRetries, retryDelay, options, session) }
+  finally { session.dispose() }
+}
+
+async function downloadImageRound(
+  url: string, maxRetries: number, retryDelay: number, options: ImageDownloadOptions,
+  session: TransferSession<AttemptOutcome>,
 ): Promise<DownloadResult> {
   const retries = clampImageDownloadRetries(maxRetries)
   const normalAttempts = retries + 1
-  const routes = [url, ...getFallbackUrls(url)]
+  const routes = transferPool.hostHealth.order([url, ...getFallbackUrls(url)])
   const maxLoggedAttempts = Math.max(normalAttempts, routes.length)
   const unavailable = new Set<string>()
   const deadline = Date.now() + IMAGE_DOWNLOAD_TIME_BUDGET_MS
@@ -407,6 +389,7 @@ export async function downloadImage(
   let transientAttempt = 0
   let sawNotFound = false
   let lastResult: DownloadResult = { success: false, error: '下载失败' }
+  let connectionOnly = true
   // 本次下载只要出现过【任何一次】瞬态失败，最终就不许判成 not-found —— 哪怕后面
   // 每条线路都回 404。因为「先超时/5xx、后 404」完全可能是同一个抽风窗口的两种表现
   // （CDN 回源失败时先 5xx 后缓存一个 404 是常见形态），把它判成死刑会永久放弃一张
@@ -436,14 +419,17 @@ export async function downloadImage(
     if (attempts > 0) log(`切换下载线路: ${route}`)
 
     attempts++
-    const outcome = await attemptDownloadOnce(
-      route,
-      Math.max(1, Math.min(IMAGE_REQUEST_TIMEOUT_MS, remainingMs)),
-      attempts,
-      maxLoggedAttempts,
-    )
+    let outcome: AttemptOutcome
+    try {
+      log(`尝试下载图片 (${attempts}/${maxLoggedAttempts}): ${route}`)
+      outcome = await session.request(route, 'image', Math.max(1, Math.min(imageRequestTimeoutMs(options.expectedBytes, route), remainingMs)))
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error))
+      outcome = { kind: errorKind(normalized), result: { success: false, error: normalized.message, retryAt: transferPool.retryAt(route), connectionUnavailable: isConnectionUnavailable(normalized) } }
+    }
     lastResult = outcome.result
     if (outcome.kind === 'success') return outcome.result
+    connectionOnly = connectionOnly && outcome.result.connectionUnavailable === true
 
     if (outcome.kind === 'not-found') {
       sawNotFound = true
@@ -473,9 +459,14 @@ export async function downloadImage(
     }
   }
 
+  const late = await session.waitForOutcome(deadline - Date.now())
+  if (late?.kind === 'success') return late.result
+  if (late) return { ...late.result, connectionUnavailable: connectionOnly && late.result.connectionUnavailable === true, failureKind: sawTransient ? 'transient' : 'not-found' }
+
   // 只有「见过 404/410」且「全程没有任何瞬态」才敢收尾成 not-found。
   return {
     ...lastResult,
+    connectionUnavailable: attempts > 0 && connectionOnly,
     failureKind: sawNotFound && !sawTransient ? 'not-found' : 'transient',
   }
 }

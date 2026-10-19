@@ -1,3 +1,5 @@
+import { transferPool } from '../src/common/transfer/transferPool'
+beforeEach(() => transferPool.clear())
 /**
  * REPRO（钉红）: relay-1 图床链接在「CF 源站尚未就绪」时的本地化行为
  *
@@ -244,7 +246,7 @@ describe('修复后：重试（指数退避）+ 续传 + 最终本地化（策�
     const { downloadImage, IMAGE_RETRY_DELAY_CAP_MS } = await import(
       '../src/imageLocalizer/imageDownloader'
     )
-    const maxRetries = 5
+    const maxRetries = 3 // below the host circuit threshold; exercise exponential backoff
     // 基础退避取 20ms（原来是 2ms）：2ms 级别的间隔在 CPU 被 jest 并行占满时抖动
     // 就能超过间隔本身，导致「相邻间隔单调不减」这种逐对比较随机翻红（本用例
     // 2026-07-25 就这么飘过：单跑绿、全量并行跑红）。改成断言「总耗时 ≥ 退避阶梯之和

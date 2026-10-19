@@ -171,7 +171,7 @@ describe('图片热路径性能保护', () => {
     expect(mockDownload).toHaveBeenCalledTimes(2)
   })
 
-  test('3 路下载保持并发，但 PNG Canvas 转换最多同时一个', async () => {
+  test('跨笔记共享 3 路下载，但 PNG Canvas 转换最多同时一个', async () => {
     const { contents, localizer } = makeHarness()
     localizer.updateOptions({ ...options, enablePngToJpeg: true })
     mockDetectFormat.mockReturnValue('png')
@@ -196,9 +196,11 @@ describe('图片热路径性能保护', () => {
       'https://cdn.example.com/two.png',
       'https://cdn.example.com/three.png',
     ]
-    contents.set(file.path, urls.map((url) => `![](${url})`).join('\n'))
+    const other = makeFile('Synced/other.md')
+    contents.set(file.path, urls.slice(0, 2).map((url) => `![](${url})`).join('\n'))
+    contents.set(other.path, `![](${urls[2]})`)
 
-    const processing = localizer.localizeFile(file)
+    const processing = Promise.all([localizer.localizeFile(file), localizer.localizeFile(other)])
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(mockDownload).toHaveBeenCalledTimes(3)
     expect(mockConvert).toHaveBeenCalledTimes(1)
@@ -210,7 +212,8 @@ describe('图片热路径性能保护', () => {
     }
     releases.shift()?.()
 
-    await expect(processing).resolves.toBe(true)
+    await expect(processing).resolves.toEqual([true, true])
+    expect(contents.get(other.path)).not.toContain('https://')
     expect(maxActiveConversions).toBe(1)
     expect(contents.get(file.path)).not.toContain('https://')
   })

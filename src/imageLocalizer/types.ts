@@ -48,6 +48,7 @@ export interface LocalizeTask {
    * （见 imageLocalizer.drainQueue）。缺省视作 0。
    */
   notFoundRounds?: number
+  firstNotFoundAt?: number
 }
 
 /**
@@ -65,6 +66,9 @@ export type DownloadFailureKind = 'not-found' | 'transient'
  * 图片下载结果
  */
 export interface DownloadResult {
+  connectionUnavailable?: boolean
+  /** Earliest server-permitted retry for this host. */
+  retryAt?: number
   /** 是否成功 */
   success: boolean
   /** 本地文件路径 */
@@ -87,6 +91,9 @@ export interface DownloadResult {
  * 不传 sink 时行为与历史完全一致（一律按瞬态处理）。
  */
 export interface FileLocalizeOutcome {
+  connectionFailures?: number
+  hasOtherFailures?: boolean
+  retryAt?: number
   /** 本轮至少有一张图被服务端确认不存在（404/410，且跨可用线路交叉验证过） */
   hasNotFound: boolean
   /** 本轮至少有一次瞬态失败（下载/保存/读写/校验），含整文件级错误 */

@@ -72,10 +72,10 @@ export class SyncNoticeManager {
    * Fill all blocks, show success message, auto-hide after 3s
    * （带提醒时改为 10s —— 第二行要能点得到）
    */
-  completeSync(successCount: number, reminder?: SyncNoticeReminder): void {
+  completeSync(successCount: number, reminder?: SyncNoticeReminder, backgroundLocalization = false): void {
     this.filledBlocks = this.totalBlocks
     if (this.mainNotice) {
-      const line = this.renderProgressBar(`同步完成！${successCount} 篇文章`)
+      const line = this.renderProgressBar(`同步完成！${successCount} 篇文章${backgroundLocalization ? '，图片和附件后台处理中' : ''}`)
       this.mainNotice.setMessage(this.composeMessage(line, reminder))
       this.finishStatus(this.mainNotice, reminder)
     }
@@ -189,6 +189,16 @@ export class SyncNoticeManager {
     this.phaseTotal = total
     this.phaseProcessed = 0
     this.phaseNotice = new Notice('', 0)
+    this.phaseNotice.setMessage(this.renderPhaseBar())
+  }
+
+  /** Use the worker's current counts when new work can join an active phase. */
+  updatePhaseProgress(label: string, processed: number, total: number): void {
+    if (total <= 0) return
+    this.phaseLabel = label
+    this.phaseProcessed = processed
+    this.phaseTotal = total
+    if (!this.phaseNotice) this.phaseNotice = new Notice('', 0)
     this.phaseNotice.setMessage(this.renderPhaseBar())
   }
 

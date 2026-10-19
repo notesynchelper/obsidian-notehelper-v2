@@ -110,7 +110,7 @@ describe('AttachmentLocalizationQueue: unmarkAsProcessed 重置标记', () => {
     queue = new AttachmentLocalizationQueue()
   })
 
-  test('已处理的文件无法重新入队', () => {
+  test('R2: 已处理路径仍可入队（新合并附件）', () => {
     const file = createMockFile('test.md')
     const task = { file, attachments: [], createdAt: Date.now(), retryCount: 0 }
 
@@ -119,7 +119,7 @@ describe('AttachmentLocalizationQueue: unmarkAsProcessed 重置标记', () => {
     queue.markAsProcessed(file.path)
 
     queue.enqueue({ ...task })
-    expect(queue.isEmpty()).toBe(true)
+    expect(queue.isEmpty()).toBe(false)
   })
 
   test('unmarkAsProcessed 后可重新入队', () => {

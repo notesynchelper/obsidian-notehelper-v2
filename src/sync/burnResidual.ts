@@ -1,5 +1,6 @@
+import { scanTemplateFileAttachments } from '../common/templateFileAttachment'
 import { isRemoteImage } from '../imageLocalizer/imageDownloader'
-import { isRemoteAttachment, extractFileAttachmentFromContent } from '../attachmentLocalizer'
+import { isRemoteAttachment } from '../attachmentLocalizer'
 import { isAlwaysLocalizeDomain, isNeverLocalizeUrl } from '../common/imageRelay'
 import { ImageMode } from '../settings'
 import { scanImageSyntax } from '../imageLocalizer/imageSyntax'
@@ -44,9 +45,14 @@ export function extractRemoteImageUrls(content: string): string[] {
 /** 抽出 item 渲染正文里的「原始远程附件 URL」（企微文件消息等）。 */
 export function extractRemoteAttachmentUrls(content: string): string[] {
 	if (!content) return []
-	const att = extractFileAttachmentFromContent(content)
-	if (att && att.url && isRemoteAttachment(att.url)) return [att.url]
-	return []
+	const urls = new Set<string>()
+	for (const match of content.matchAll(/📎\s*\[[^\]]+\]\(([^)]+)\)/g)) {
+		if (isRemoteAttachment(match[1])) urls.add(match[1])
+	}
+	// A FILE item's original URL may also remain in frontmatter after success.
+	// Its generated pending path is the exact residual that blocks deletion.
+	for (const reference of scanTemplateFileAttachments(content)) urls.add(reference.placeholder)
+	return [...urls]
 }
 
 /**
